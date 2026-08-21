@@ -245,6 +245,16 @@ class DemonBotPlugin(Star):
             self._clean_nick(str(x)).lower()
             for x in (self._cfg("owner", "names", default=[]) or []) if str(x).strip()
         }
+        # 默认主人：遂意（QQ 2677518198）。
+        # 仍然以 owner.qq / owner.names 为正式配置；这里仅在配置为空时提供默认身份，
+        # 防止升级后旧配置没有 owner 字段导致主人在群里被当成普通群友。
+        if not self.owner_ids and not self.owner_names:
+            self.owner_ids.add("2677518198")
+            self.owner_names.add("遂意")
+            self.config.setdefault("owner", {})["qq"] = sorted(self.owner_ids)
+            self.config["owner"]["names"] = sorted(self.owner_names)
+            self.config["owner"].setdefault("title", "主人")
+            self._persist_config()
         self.admin_ids |= self.owner_ids
         self._last_sponsor_at = 0.0
 
@@ -2268,11 +2278,24 @@ class DemonBotPlugin(Star):
         ("梗",       ["查梗"],                "676767",      "联网查一个梗，查完入库",            "词库", False),
         ("教梗",     [],                      "词=解释",      "手动录入，优先级高于联网结果",       "词库", False),
         ("忘梗",     [],                      "词",           "从词库删掉一个词",                 "词库", False),
-        ("词库",     [],                      "",            "看最近学到的梗",                   "词库", False),
 
         ("搜",       ["搜索"],                "关键词",       "直接联网搜一次并给出摘要",          "联网", False),
         ("联网测试", ["网络测试"],            "",            "逐个体检搜索后端，报告哪个能通",     "联网", False),
         ("热点",     ["热搜"],                "",            "刷新并查看当前热搜",               "联网", False),
+
+        # 一级菜单：这些名字本身不执行具体功能，无参数时只展开二级菜单。
+        ("插图",     ["图片菜单", "图菜单"], "",            "展开插图相关指令",                  "菜单", False),
+        ("表情",     ["发表情", "表情包"],     "",            "展开表情相关指令；带参数仍可直接发图", "菜单", False),
+        ("词库",     ["词库菜单"],            "",            "展开词库相关指令；带参数仍可查询", "菜单", False),
+        ("联网",     ["联网菜单", "网络"],    "",            "展开联网相关指令",                  "菜单", False),
+        ("群友",     ["成员"],                "",            "展开群友相关指令；带参数仍可查人", "菜单", False),
+        ("生活",     ["生活菜单"],            "",            "展开生活相关指令",                  "菜单", False),
+        ("文案",     ["来句", "语录"],        "",            "展开文案相关指令；带参数仍可直接取文案", "菜单", False),
+        ("多模态",   ["多模态菜单"],          "",            "展开识图、语音相关指令",              "菜单", False),
+        ("人格",     ["人格菜单"],            "",            "展开人格、风格、心情相关指令",        "菜单", False),
+        ("记忆",     ["记忆菜单"],            "",            "展开记忆相关指令；带参数仍可直接使用", "菜单", False),
+        ("控制",     ["控制菜单"],            "",            "展开控制、开关、省钱相关指令",        "菜单", False),
+        ("其他指令", ["其它指令", "其他", "更多"], "",       "展开低频、诊断和管理员指令",          "菜单", False),
 
         ("图",       ["来图", "图片", "看看"], "腿/真腿/好腿", "按标签取图（真=真人，好=R18且需私聊解锁）", "插图", False),
         ("图源测试", [],                      "",            "体检图源，并显示取到图的规格尺寸",   "插图", False),
@@ -2285,12 +2308,10 @@ class DemonBotPlugin(Star):
         ("age>18",   ["开启R18", "开启成人"], "",            "私聊开启本账号 R18 分区（仅私聊）", "插图", False),
         ("age<18",   ["关闭R18", "关闭成人"], "",            "关闭本账号 R18 分区",               "插图", False),
 
-        ("群友",     ["成员"],                "",            "本群群友编号表",                   "群友", False),
         ("查人",     [],                      "笙歌",         "查某个群友的档案",                 "群友", False),
         ("备注",     [],                      "昵称=内容",    "给某个群友加备注",                 "群友", False),
         ("忘了他",   [],                      "昵称",         "清空某人的备注",                   "群友", True),
 
-        ("表情",     ["发表情", "表情包"],     "哭/列表/重载", "让它发一张表情包，或管理表情库",     "表情", False),
         ("表情测试", [],                      "",            "看表情库装了多少张、情绪对得上吗",   "表情", False),
 
         ("作息",     ["日程", "时间线"],       "",            "看它今天的作息时间线",              "生活", False),
@@ -2298,7 +2319,6 @@ class DemonBotPlugin(Star):
         ("重排作息", [],                      "",            "重新掷一次今天的作息（管理员）",     "生活", True),
         ("主人",     [],                      "查看/加 QQ号", "看/设置谁是主人",                  "生活", False),
 
-        ("文案",     ["来句", "语录"],        "情话/伤感/温柔", "来一句高质量文案",                "文案", False),
         ("文案测试", [],                      "",            "体检文案接口，看你的网络能通哪几家", "文案", False),
 
         ("识图",     ["看图", "这是什么"],     "（回复或附带图片）", "让它看懂你发的图",             "多模态", False),
@@ -2386,6 +2406,13 @@ class DemonBotPlugin(Star):
         # ---------- 基础 ----------
         if name == "帮助":
             return self._cmd_help()
+        # 一级分类菜单：无参数时展开二级菜单；有参数时交给原业务指令继续处理。
+        category_menu_names = {
+            "插图": "插图", "联网": "联网", "生活": "生活", "多模态": "多模态",
+            "人格": "人格", "记忆": "记忆", "控制": "控制", "其他指令": "其他指令",
+        }
+        if name in category_menu_names and not arg.strip():
+            return self._cmd_category_menu(category_menu_names[name])
         if name == "状态":
             return self._cmd_status(group_id)
         if name == "自检":
@@ -2435,6 +2462,10 @@ class DemonBotPlugin(Star):
             return f"已从词库删掉「{arg}」"
 
         if name == "词库":
+            if not arg.strip():
+                return self._cmd_category_menu("词库")
+            if arg.strip().lower() in ("列表", "list"):
+                arg = ""
             cache = self._slang_cache()
             if not cache:
                 return "词库还是空的"
@@ -2620,7 +2651,9 @@ class DemonBotPlugin(Star):
             if arg in ("重载", "刷新", "reload"):
                 n = self._reload_stickers()
                 return f"重新扫了一遍，现在有 {n} 张表情。目录：{self._sticker_dir()}"
-            if arg in ("列表", "list", ""):
+            if arg == "":
+                return self._cmd_category_menu("表情")
+            if arg in ("列表", "list"):
                 if not self._sticker_box or not self._sticker_box.count:
                     return (
                         f"表情库是空的。把 GIF 丢进这个目录再发 /表情 重载：\n{self._sticker_dir()}\n"
@@ -2709,6 +2742,8 @@ class DemonBotPlugin(Star):
 
         # ---------- 文案 ----------
         if name == "文案":
+            if not arg.strip():
+                return self._cmd_category_menu("文案")
             if quotes is None:
                 return "文案模块没加载（quotes.py 缺失或报错），发 /自检 看详情"
             kind = quotes.normalize_kind(arg or "一言")
@@ -2763,6 +2798,8 @@ class DemonBotPlugin(Star):
 
         # ---------- 群友 ----------
         if name == "群友":
+            if not arg.strip():
+                return self._cmd_category_menu("群友")
             roster = self.member_roster(group_id, 20)
             return ("本群群友档案：\n" + roster) if roster else "还没记录到人"
 
@@ -3087,16 +3124,117 @@ class DemonBotPlugin(Star):
         except Exception as e:
             logger.warning(f"[恶魔bot] 配置保存失败：{e}")
 
+    # ==================== 两级菜单 ====================
+    # 一级 /help 只保留最重要的 3 个诊断指令；其余功能按分类二级展开。
+    MENU_GROUPS = {
+        "插图": [
+            "/图 关键词  按关键词取图",
+            "/标签 关键词  查看 Pixiv 实际搜索标签",
+            "/记住标签 词=标签  手动固定 Pixiv 标签",
+            "/上一张  查看上一张图的信息",
+            "/age>18  私聊开启本账号 R18 分区",
+            "/age<18  关闭本账号 R18 分区",
+        ],
+        "表情": [
+            "/表情 哭  发送指定情绪的表情包",
+            "/表情 列表  查看表情库",
+            "/表情 重载  重新扫描/解压表情包",
+            "/表情测试  检查表情库和情绪匹配",
+        ],
+        "词库": [
+            "/梗 词  联网查询并学习一个梗",
+            "/教梗 词=解释  手动录入梗",
+            "/忘梗 词  删除一个梗",
+            "/词库 列表  查看最近学到的梗",
+        ],
+        "联网": [
+            "/搜 关键词  联网搜索并摘要",
+            "/联网测试  检查搜索后端",
+            "/热点  查看当前热搜",
+        ],
+        "群友": [
+            "/群友  查看本群群友编号",
+            "/查人 昵称  查询群友档案",
+            "/备注 昵称=内容  添加群友备注",
+            "/忘了他 昵称  清空备注（管理员）",
+        ],
+        "生活": [
+            "/作息  查看今天的作息",
+            "/在干嘛  查看当前生活状态",
+            "/主人  查看当前主人身份",
+            "/主人 加 QQ号  增加主人（管理员）",
+            "/重排作息  重新生成今天作息（管理员）",
+        ],
+        "文案": [
+            "/文案 情话/伤感/温柔  获取一句文案",
+            "/文案测试  检查文案接口",
+        ],
+        "多模态": [
+            "/识图  让 Bot 看懂图片",
+            "/说 文本  把文字转成语音",
+        ],
+        "人格": [
+            "/学风格  重新学习群聊说话风格",
+            "/风格  查看当前风格速记",
+            "/心情  查看当前心情",
+            "/重置风格  清除风格速记（管理员）",
+        ],
+        "记忆": [
+            "/记住 内容  记住一件事",
+            "/回忆 关键词  找回记忆",
+        ],
+        "控制": [
+            "/闭嘴 30  让 Bot 安静几分钟",
+            "/解禁  清除静音状态（管理员）",
+            "/开关  查看分级开关",
+            "/开关 分辨率 中  修改插图画质（管理员）",
+            "/省钱  查看省钱/省流状态",
+            "/冷却 60  修改主动插话冷却（管理员）",
+            "/概率 0.1  修改普通群友插话概率（管理员）",
+        ],
+        "其他指令": [
+            "/发送日志 500/全部  私聊发送运行日志（管理员）",
+            "/图源测试  检查图源和图片规格",
+            "/标签表  查看全部自定义 Pixiv 标签映射",
+            "/忘记标签 词  删除自定义标签映射",
+            "/榜单  查看 Pixiv 榜单状态",
+            "/文案测试  检查文案接口",
+            "/表情测试  检查表情库",
+        ],
+    }
+
+    def _menu_prefix(self) -> str:
+        return (self._cfg("commands", "prefixes", default=None) or ["/"])[0]
+
+    def _cmd_category_menu(self, category: str) -> str:
+        lines = self.MENU_GROUPS.get(category)
+        if not lines:
+            return "没有这个分类，发 /help 看目录"
+        return f"恶魔bot｜{category}指令\n" + "\n".join(lines)
+
     def _cmd_help(self) -> str:
-        prefix = (self._cfg("commands", "prefixes", default=None) or ["/"])[0]
-        by_cat = {}
-        for cmd, _a, params, desc, cat, admin_only in self.COMMAND_TABLE:
-            line = f"{prefix}{cmd}" + (f" {params}" if params else "")
-            by_cat.setdefault(cat, []).append(f"{line}  {desc}" + ("（管理员）" if admin_only else ""))
-        out = [f"恶魔bot {self.PLUGIN_VERSION} 指令表（前缀 / 或 == 都行，私聊也能用）"]
-        for cat, lines in by_cat.items():
-            out.append(f"\n【{cat}】\n" + "\n".join(lines))
-        return "\n".join(out)
+        p = self._menu_prefix()
+        return (
+            f"恶魔bot {self.PLUGIN_VERSION}\n"
+            f"常用指令（前缀 {p} 或 == 都行）\n\n"
+            f"【核心】\n"
+            f"{p}状态  运行状态总览\n"
+            f"{p}自检  插件出问题先发这个\n"
+            f"{p}版本  查看版本和已加载模块\n\n"
+            f"【功能目录】\n"
+            f"{p}插图  图片/Pixiv/R18\n"
+            f"{p}表情  表情包\n"
+            f"{p}词库  梗词学习\n"
+            f"{p}联网  搜索/热搜\n"
+            f"{p}群友  群友档案\n"
+            f"{p}生活  作息/主人\n"
+            f"{p}文案  文案\n"
+            f"{p}多模态  识图/语音\n"
+            f"{p}人格  风格/心情\n"
+            f"{p}记忆  记住/回忆\n"
+            f"{p}控制  开关/冷却/省钱\n"
+            f"{p}其他指令  低频/诊断/管理员功能"
+        )
 
     def _cmd_status(self, group_id: str) -> str:
         now = time.time()
