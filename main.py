@@ -416,8 +416,8 @@ class DemonBotPlugin(Star):
                 imgs.setdefault("pixiv_host", "https://www.pixiv.net")
                 imgs.setdefault("users_gate", [10000, 5000, 1000])
                 imgs.setdefault("month_only", True)
-                imgs.setdefault("search_pages", 2)
-                imgs.setdefault("min_bookmarks", 0)
+                imgs.setdefault("search_pages", 3)
+                imgs.setdefault("min_bookmarks", 300)
                 imgs.setdefault("send_all_pages", True)
                 imgs.setdefault("forward_multi_page", True)
                 imgs.setdefault("max_pages_per_illust", 20)
@@ -484,8 +484,8 @@ class DemonBotPlugin(Star):
             imgs.setdefault("pixiv_host", "https://www.pixiv.net")
             imgs.setdefault("users_gate", [10000, 5000, 1000])
             imgs.setdefault("month_only", True)
-            imgs.setdefault("search_pages", 2)
-            imgs.setdefault("min_bookmarks", 0)
+            imgs.setdefault("search_pages", 3)
+            imgs.setdefault("min_bookmarks", 300)
             imgs.setdefault("send_all_pages", True)
             imgs.setdefault("forward_multi_page", True)
             imgs.setdefault("max_pages_per_illust", 20)
@@ -579,110 +579,154 @@ class DemonBotPlugin(Star):
             logger.warning(f"[恶魔bot] 保存人格档案失败：{e}")
 
     def _persona_fragment(self, text: str = "") -> str:
-        """把长期人格档案以“相关优先”的方式注入当前请求。
+        """把 persona.md 当作唯一的全局长期自我事实源。
 
-        关键点：
-        1. persona.md 是全局文件，不区分群聊/私聊。
-        2. 普通聊天只注入一张很短的“身份卡”，减少 token。
-        3. 如果用户问到生日/身高/MBTI/主人等人格字段，则优先抽取对应行，
-           保证刚刚通过 /记住信息 写入的内容能被下一条消息立即看到。
+        设计原则：
+        1. 不按群/私聊隔离，所有会话共享同一份 persona.md。
+        2. 普通聊天只注入短身份卡。
+        3. 询问年龄/生日/身高/三围等事实时，按字段精确抽取，避免
+           因人格文件过长、排序混乱或 system prompt 截断而答错。
+        4. 同义问法统一映射到同一事实键。
         """
         if not self._cfg("persona", "inject", default=True):
             return ""
-
         raw = (self._persona or "").strip()
         if not raw:
             return ""
 
-        cap = int(self._cfg("persona", "max_inject_chars", default=700) or 700)
-        cap = max(250, min(cap, 900))
-        text_l = (text or "").lower()
+        cap = int(self._cfg("persona", "max_inject_chars", default=900) or 900)
+        cap = max(320, min(cap, 1100))
+        q = (text or "").strip().lower()
 
-        # 常见的“自我查询”触发词；命中时允许注入更多档案字段。
-        detail_words = (
-            "生日", "几岁", "年龄", "身高", "体重", "三围", "鞋码", "血型",
-            "星座", "mbti", "性别", "住哪", "城市", "职业", "名字", "叫什么",
-            "是谁", "你是谁", "你叫什么", "你的设定", "人格", "自我介绍",
-            "主人", "生日是哪天", "哪天生日"
-        )
-        detailed = any(w in text_l for w in detail_words)
+        # 把人格档案里的“事实行”归一化，兼容 Markdown / 旧模板 / 新模板。
+        facts = []
+        for raw_line in raw.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            line = re.sub(r"^[#>*+\-•\s]+", "", line).strip()
+            if not line:
+                continue
+            facts.append(line)
 
-        lines = [x.strip() for x in raw.splitlines() if x.strip()]
-        # 优先保留最近新增的主人补充内容；然后寻找与当前问题相关的字段。
-        supplement = []
+        # 查询词 -> 人格字段关键词。
+        field_aliases = {
+            "name": ("名字", "姓名", "你叫什么"),
+            "age": ("年龄", "几岁", "多大"),
+            "birthday": ("生日", "哪天生日", "出生日期"),
+            "height": ("身高", "多高"),
+            "weight": ("体重", "多重"),
+            "measurements": ("三围", "胸围", "腰围", "臀围"),
+            "shoe": ("鞋码", "穿多大鞋"),
+            "blood": ("血型",),
+            "mbti": ("mbti",),
+            "gender": ("性别",),
+            "city": ("住哪", "住在哪里", "城市", "洛阳"),
+            "major": ("专业", "学什么", "研究生", "研一"),
+            "job": ("职业", "做什么工作", "工作"),
+            "wechat": ("微信", "微信号"),
+            "owner": ("主人", "谁是你的主人"),
+            "appearance": ("发色", "发型", "眼睛", "肤色", "穿搭", "外貌"),
+            "likes": ("喜欢", "爱吃", "兴趣", "爱好"),
+        }
+
+        matched = set()
+        for key, aliases in field_aliases.items():
+            if any(a in q for a in aliases):
+                matched.add(key)
+
+        def hit(line: str, words: tuple[str, ...]) -> bool:
+            low = line.lower()
+            return any(w.lower() in low for w in words)
+
+        field_words = {
+            "name": ("名字：", "名字:", "姓名：", "姓名:"),
+            "age": ("年龄：", "年龄:", "设定年龄：", "设定年龄:"),
+            "birthday": ("生日：", "生日:"),
+            "height": ("身高：", "身高:"),
+            "weight": ("体重：", "体重:"),
+            "measurements": ("三围：", "三围:", "胸围", "腰围", "臀围"),
+            "shoe": ("鞋码：", "鞋码:"),
+            "blood": ("血型：", "血型:"),
+            "mbti": ("MBTI：", "MBTI:"),
+            "gender": ("性别：", "性别:", "性别设定"),
+            "city": ("居住城市：", "居住城市:", "城市：", "城市:"),
+            "major": ("专业：", "专业:", "学业：", "研究生"),
+            "job": ("职业：", "职业:", "工作：", "工作:"),
+            "wechat": ("微信号：", "微信号:", "微信：", "微信:"),
+            "owner": ("主人：", "主人:", "主人 QQ", "主人QQ"),
+            "appearance": ("身高：", "体重：", "发色：", "发型：", "眼睛：", "肤色：", "穿搭："),
+            "likes": ("喜欢：", "兴趣：", "爱好："),
+        }
+
+        # 始终保留最关键的身份锚点，避免“问年龄却答成群友年龄”。
+        core = []
+        for k in ("name", "gender", "age", "birthday", "owner"):
+            for line in facts:
+                if hit(line, field_words[k]):
+                    core.append(line)
+                    break
+
         relevant = []
-        identity = []
+        if matched:
+            for key in matched:
+                words = field_words[key]
+                for line in facts:
+                    if hit(line, words):
+                        relevant.append(line)
+            # “你是谁/介绍一下自己”需要身份 + 学业/职业 + 城市，但仍然保持短。
+            if any(w in q for w in ("你是谁", "你叫什么", "自我介绍", "你的设定", "人格")):
+                for key in ("major", "job", "city", "appearance", "mbti", "blood"):
+                    for line in facts:
+                        if hit(line, field_words[key]):
+                            relevant.append(line)
 
-        for line in lines:
-            norm = line.lstrip("-*• ").strip()
-            low = norm.lower()
-            if "主人补充的长期信息" in low:
-                continue
-            if "主人补充" in low:
-                continue
-
-            if any(k in low for k in ("名字：", "名字:", "角色：", "角色:", "主人：", "主人:",
-                                      "主人 qq", "主人qq", "设定年龄", "生日：", "生日:",
-                                      "性别设定", "职业设定")):
-                identity.append(norm)
-
-            if any(k.lower() in low for k in detail_words):
-                relevant.append(norm)
-
-        # 只抽取最近一段“主人补充”内容，避免旧聊天日志/大段人格正文挤占输入。
-        for i, line in enumerate(lines):
-            if "主人补充的长期信息" in line:
-                for x in lines[i + 1:]:
-                    if x.startswith("## ") and x != line:
+        # 普通聊天只给短身份卡，不塞整份人格。
+        if not matched:
+            identity_keys = ("name", "age", "birthday", "major", "job", "city")
+            for key in identity_keys:
+                for line in facts:
+                    if hit(line, field_words[key]):
+                        relevant.append(line)
                         break
-                    if x.startswith("-"):
-                        supplement.append(x.lstrip("- ").strip())
-
-        # 去重并保持顺序。
-        def uniq(seq):
-            out = []
-            seen = set()
-            for x in seq:
-                if x and x not in seen:
-                    seen.add(x)
-                    out.append(x)
-            return out
-
-        identity = uniq(identity)
-        relevant = uniq(relevant)
-        supplement = uniq(supplement)
+            if not relevant:
+                relevant = facts[:6]
 
         selected = []
-        if detailed:
-            selected.extend(relevant)
-            selected.extend(identity)
-            selected.extend(supplement[-8:])
-        else:
-            # 普通聊天只给最少量的身份连续性信息。
-            selected.extend(identity[:6])
-            selected.extend(supplement[-3:])
+        seen = set()
+        for line in core + relevant:
+            if line not in seen:
+                seen.add(line)
+                selected.append(line)
 
-        # 如果字段提取为空，至少让模型知道自己叫焦糖。
-        if not selected:
-            selected = ["名字：焦糖", "角色：主人的私人小助手"]
-
-        selected = uniq(selected)
+        # 若详细问题仍没有命中对应字段，再给一小段“长期自我备注”，但不把整份文件塞进去。
+        if matched and len(selected) < 2:
+            for line in facts:
+                if "长期自我信息" in line:
+                    continue
+                if len(line) <= 80 and line not in seen:
+                    selected.append(line)
+                    seen.add(line)
+                if len(selected) >= 4:
+                    break
 
         out = []
-        n = 0
+        used = 0
         for line in selected:
             piece = f"- {line}"
-            if n + len(piece) + 1 > cap:
+            if used + len(piece) + 1 > cap:
                 break
             out.append(piece)
-            n += len(piece) + 1
+            used += len(piece) + 1
 
         if not out:
             return ""
-
-        mode = "相关人格档案" if detailed else "长期身份卡"
-        return f"\n\n[焦糖{mode}]\n" + "\n".join(out) + \
-            "\n[上述内容是焦糖自己的长期资料；与普通聊天历史无关，优先相信它。]"
+        mode = "相关事实" if matched else "长期身份卡"
+        return (
+            f"\n\n[焦糖{mode}]\n"
+            + "\n".join(out)
+            + "\n[这些是焦糖自己的长期事实；与当前群聊历史分开，回答自我信息时优先采用。]"
+        )
 
     def _is_sleep_window(self) -> bool:
         if not self._cfg("sleep_mode", "enabled", default=True):
@@ -1642,7 +1686,7 @@ class DemonBotPlugin(Star):
         # 固定深夜休眠：轻量指令可用，普通聊天/@/学习全部停止。
         if self._is_sleep_window():
             cmd0, _, _ = self._parse_command(event)
-            wake_cmds={"帮助","状态","自检","版本","token","撤回"}
+            wake_cmds={"帮助","状态","自检","版本","撤回"}
             if cmd0 not in wake_cmds:
                 event.stop_event(); return
 
@@ -2610,7 +2654,6 @@ class DemonBotPlugin(Star):
         ("状态",     ["恶魔状态"],            "",            "运行状态总览",                     "基础", False),
         ("自检",     ["诊断"],                "",            "逐项体检，插件出问题先发这个",       "基础", False),
         ("版本",     ["ver"],                 "",            "看插件版本和已加载的模块",          "基础", False),
-        ("token",    ["用量", "tokens"],      "",            "看今天消耗的 token",               "基础", False),
         ("发送日志", ["日志", "运行日志"],     "500/全部",     "私聊把运行日志发给你（仅管理员，仅私聊）", "基础", True),
         ("撤回",     ["删除刚才"],            "",            "引用 bot 消息并发送 /撤回 自动撤回", "其他", False),
 
@@ -2683,7 +2726,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.8.0"
+    PLUGIN_VERSION = "v2.9.0"
 
     def _command_names(self) -> list:
         names = []
@@ -2761,8 +2804,6 @@ class DemonBotPlugin(Star):
             return self._cmd_status(group_id)
         if name == "自检":
             return await self._cmd_selfcheck(event, group_id)
-        if name == "token":
-            return self._cmd_token_usage()
         if name == "撤回":
             return await self._recall_replied_message(event)
         if name == "版本":
@@ -4017,7 +4058,9 @@ class DemonBotPlugin(Star):
 
         t = re.sub(r"^[的啊吧呀呢吗嘛了个张点儿~!！?？。，,\s]+", "", t)
         t = re.sub(r"[的啊吧呀呢吗嘛了个张点儿~!！?？。，,\s]+$", "", t)
-        keyword = (t.split() or [""])[0]
+        # 允许“西装 女生”“饥荒 温蒂”等多词关键词；保留中间空格给 Pixiv 搜索。
+        t = re.sub(r"\s+", " ", t).strip()
+        keyword = t
         return is_real, mature_mode, keyword
 
     def _extract_image_tags(self, text: str) -> list:
@@ -4027,11 +4070,23 @@ class DemonBotPlugin(Star):
             return []
         mapping = self._image_keyword_map()
         mapped = mapping.get(keyword)
-        tags = mapped[:3] if mapped else [keyword]
+        if mapped:
+            tags = mapped[:4]
+        else:
+            # 常见中文视觉词给出少量 Pixiv 候选，随后仍会经过官方标签解析/缓存。
+            hints = {
+                "腿": ["脚", "太もも", "美脚"],
+                "长腿": ["脚", "美脚", "太もも"],
+                "黑丝": ["黒タイツ", "タイツ"],
+                "西装": ["スーツ"],
+                "校服": ["制服"],
+                "猫": ["猫"],
+            }
+            tags = hints.get(keyword, [keyword])
         quality = self._cfg("images", "quality_tag", default="")
         if quality and tags:
             tags.append(quality)
-        return [x for x in tags if x][:4]
+        return [x for x in tags if x][:6]
 
     async def _resolve_image_tags(self, word: str) -> list:
         """自动发现 Pixiv 实际标签；手工 /记住标签 永远优先。"""
@@ -4060,6 +4115,7 @@ class DemonBotPlugin(Star):
             self._auto_img_tags[word] = list(tags[:6])
             self._save_json(self.auto_imgtag_file, self._auto_img_tags)
             return list(tags[:6])
+        # 没有 Pixiv 自动发现结果时，退回本地常用词候选，而不是直接拿中文硬搜。
         return self._extract_image_tags(word)
 
     def _user_r18_unlocked(self, user_id: str) -> bool:

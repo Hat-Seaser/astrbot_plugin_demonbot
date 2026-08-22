@@ -14,3 +14,4 @@
 - `/添加人格 内容`：追加人格内容。
 - `/替换人格 内容`：整份覆盖。
 - `/记住信息 内容`：追加一条长期自我信息。
+\n\n## v2.9.0 维护说明\n- 长期人格事实源：`data/plugin_data/demonbot/persona.md`\n- 模板：插件目录 `persona_template.md`\n- 菜单：`command_menu.py`\n- 固定回复：`responses.py`\n- `/token` 已移除：插件无法读取 DeepSeek 平台后台账单，因此不再显示可能与平台实际用量不一致的本地估算。\n- 普通 Pixiv：默认月榜优先，并提高最低收藏门槛，按标签命中、收藏、榜单名次、分辨率综合排序。\n
