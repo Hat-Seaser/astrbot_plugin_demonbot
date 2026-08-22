@@ -78,6 +78,18 @@ except Exception as _e:  # noqa: BLE001
     _BOOT_ERRORS.append(f"responses.py 加载失败：{type(_e).__name__}: {_e}")
 
 try:
+    from . import poetry
+except Exception as _e:
+    poetry = None
+    _BOOT_ERRORS.append(f"poetry.py 加载失败：{type(_e).__name__}: {_e}")
+
+try:
+    from . import music
+except Exception as _e:
+    music = None
+    _BOOT_ERRORS.append(f"music.py 加载失败：{type(_e).__name__}: {_e}")
+
+try:
     from .tools.history_tool import QueryChatHistoryTool
     from .tools.knowledge_tool import LookupSlangTool, SearchWebTool, TeachSlangTool
     from .tools.member_tool import LookupMemberTool, NoteMemberTool
@@ -282,9 +294,12 @@ class DemonBotPlugin(Star):
 
         self._migrate_config()
         try:
-            self._like_daily_task = asyncio.get_running_loop().create_task(self._daily_like_loop())
+            loop = asyncio.get_running_loop()
+            self._like_daily_task = loop.create_task(self._daily_like_loop())
+            self._poetry_idle_task = loop.create_task(self._poetry_idle_loop())
         except RuntimeError:
             self._like_daily_task = None
+            self._poetry_idle_task = None
         self._last_bot = None
 
         # ---------- 生活状态 / 表情包 ----------
@@ -376,6 +391,22 @@ class DemonBotPlugin(Star):
             like_cfg.setdefault("daily_owner", True)
             like_cfg.setdefault("auto_run_interval_seconds", 600)
             like_cfg.setdefault("max_times_per_user", 10)
+
+            poke_cfg.setdefault("mention_id_mode", "none")
+
+            poetry_cfg = self.config.setdefault("poetry", {})
+            poetry_cfg.setdefault("enabled", True)
+            poetry_cfg.setdefault("idle_enabled", True)
+            poetry_cfg.setdefault("idle_threshold_seconds", 7200)
+            poetry_cfg.setdefault("idle_check_interval_seconds", 900)
+            poetry_cfg.setdefault("idle_chance", 0.18)
+            poetry_cfg.setdefault("idle_min_gap_seconds", 43200)
+            poetry_cfg.setdefault("reply_replace_chance", 0.10)
+
+            music_cfg = self.config.setdefault("music", {})
+            music_cfg.setdefault("enabled", True)
+            music_cfg.setdefault("local_clue_file", "music_clues.json")
+            music_cfg.setdefault("min_text_length", 6)
 
             stickers_cfg = self.config.setdefault("stickers", {})
             stickers_cfg.setdefault("enabled", True)
@@ -757,24 +788,62 @@ class DemonBotPlugin(Star):
             logger.warning(f"[恶魔bot] 撤回消息失败：{e}")
             return "撤回失败，可能已经过了 QQ 的可撤回时间"
 
+    def _poke_event_field(self, event: AstrMessageEvent, name: str, default=None):
+        msg = getattr(event, "message_obj", None)
+        if msg is None:
+            return default
+        value = getattr(msg, name, None)
+        if value is not None:
+            return value
+        if isinstance(msg, dict):
+            return msg.get(name, default)
+        raw = getattr(msg, "raw_message", None)
+        if isinstance(raw, dict):
+            return raw.get(name, default)
+        return default
+
+    def _poke_target_id(self, event: AstrMessageEvent) -> str:
+        target = self._poke_event_field(event, "target_id", None)
+        if target is not None:
+            return str(target)
+        # 某些适配器把 notice 数据塞在 raw_event/data 里。
+        for obj in (getattr(event, "raw_event", None), getattr(event, "message_obj", None)):
+            if isinstance(obj, dict):
+                for container in (obj, obj.get("data", {})):
+                    if isinstance(container, dict) and container.get("target_id") is not None:
+                        return str(container.get("target_id"))
+        return ""
+
+    def _poke_self_id(self, event: AstrMessageEvent) -> str:
+        sid = self._poke_event_field(event, "self_id", None)
+        if sid is None:
+            sid = getattr(event, "self_id", None)
+        if sid is None:
+            raw = getattr(event, "raw_event", None)
+            if isinstance(raw, dict):
+                sid = raw.get("self_id")
+        if sid is None:
+            try:
+                sid = event.bot.self_id
+            except Exception:
+                sid = ""
+        return str(sid or "")
+
     def _poke_text(self,event:AstrMessageEvent,group_id:str)->str:
-        nick=self._clean_nick(event.get_sender_name()) or str(event.get_sender_id())
+        nick=self._clean_nick(event.get_sender_name()) or "你"
         if self._event_is_owner(event):
             lines=getattr(responses,"POKE_OWNER",[]) if responses else []
             return random.choice(lines) if lines else "主人戳我干嘛，我在这儿呢。"
         rec=((self._members.get(group_id) or {}).get("members") or {}).get(str(event.get_sender_id()),{})
         count=int(rec.get("count",0))
-        if event.get_group_id():
-            ident = str(rec.get("code") or f"QQ{event.get_sender_id()}")
-        else:
-            ident = str(event.get_sender_id())
         if count>=100: profile="你都戳我这么多次了，手不累吗"
         elif count>=20: profile="你今天已经来找我很多次啦"
         elif count<=2: profile="刚认识就来戳我呀"
         else: profile="你又来戳我啦"
         lines=getattr(responses,"POKE_LINES",[]) if responses else []
-        text = random.choice(lines).format(nick=nick,profile=profile,count=count) if lines else f"{ident}，{profile}。"
-        return re.sub(r"^\s*{nick}[，,：:]\s*".replace("{nick}", re.escape(nick)), f"{ident}，", text, count=1)
+        text = random.choice(lines).format(nick=nick,profile=profile,count=count) if lines else f"{profile}。"
+        # 不再在群里显示 QQ 号/内部编号，直接用昵称即可。
+        return text.replace("{id}", "").replace("QQ", "")
 
     def _cfg(self, *keys, default=None):
         """从插件配置里按路径取值，取不到就返回 default。"""
@@ -1851,10 +1920,13 @@ class DemonBotPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_poke(self,event:AstrMessageEvent):
-        try: chain=list(event.message_obj.message or [])
-        except Exception: chain=[]
-        poke_cls = getattr(Comp, "Poke", None)
-        if poke_cls is None or not any(isinstance(seg, poke_cls) for seg in chain):
+        # OneBot v11 poke notice 的关键字段是 user_id / target_id。只有 target_id=机器人自己时才响应。
+        # 如果戳的是群里的其他成员，直接 stop_event，避免后续群消息流程误把它当普通消息。
+        target_id = self._poke_target_id(event)
+        self_id = self._poke_self_id(event)
+        # 没有 target_id 时宁可不回，也不猜；这比误把戳别人当戳 Bot 更安全。
+        if not target_id or (self_id and target_id != self_id):
+            event.stop_event()
             return
         if not self._cfg("poke","enabled",default=True) or self._is_sleep_window():
             event.stop_event(); return
@@ -1870,9 +1942,21 @@ class DemonBotPlugin(Star):
     async def on_group_message(self, event: AstrMessageEvent):
         self._last_bot = getattr(event, "bot", None) or self._last_bot
         group_id = event.get_group_id() or "unknown"
+        if group_id != "unknown":
+            self._known_groups.add(str(group_id))
         sender_id = str(event.get_sender_id())
+        if self._is_owner(sender_id, event.get_sender_name() or ""):
+            self._last_owner_message_at = time.time()
         sender = self._clean_nick(event.get_sender_name()) or sender_id
         text = _CTRL_RE.sub("", event.message_str or "")
+        if self._is_sleep_window():
+            return
+        music_hit = self._music_match(text)
+        if music_hit and not text.startswith(("/", "==")):
+            # 仅识别歌曲，不自动续写受版权保护的歌词；如用户自己提供了歌词数据库，music.py 可按其数据回填。
+            yield event.plain_result(music_hit)
+            event.stop_event()
+            return
 
         self_id = getattr(event.message_obj, "self_id", None)
         is_at = any(
@@ -2104,8 +2188,12 @@ class DemonBotPlugin(Star):
         私聊不做插话判断、不做静音、不做复读——那些都是群聊场景的东西。
         这里只拦指令，其余消息原样放行给正常的聊天流程。
         """
+        group_id = event.get_group_id() or "unknown"
+        if group_id != "unknown":
+            self._known_groups.add(str(group_id))
         sender_id = str(event.get_sender_id())
-        sender = self._clean_nick(event.get_sender_name()) or sender_id
+        if self._is_owner(sender_id, event.get_sender_name() or ""):
+            self._last_owner_message_at = time.time()
         text = _CTRL_RE.sub("", event.message_str or "")
 
         if self._event_is_owner(event) and self._is_recharge_notice(text):
@@ -2135,6 +2223,15 @@ class DemonBotPlugin(Star):
         elif isinstance(result, list) and result:
             yield event.chain_result(result)
         event.stop_event()
+
+    def _music_match(self, text: str):
+        if music is None or not self._cfg("music","enabled",default=True):
+            return None
+        try:
+            return music.match_lyric_clue(text, self.data_dir / str(self._cfg("music","local_clue_file",default="music_clues.json")))
+        except Exception as e:
+            logger.debug(f"[恶魔bot] 歌词识别跳过：{e}")
+            return None
 
     # ==================== 插话判断：rule 模式 ====================
 
@@ -2767,6 +2864,13 @@ class DemonBotPlugin(Star):
         if not cleaned.strip():
             cleaned = self._sanitize_reply(full_text, group_id, True)[:20] or full_text[:20]
 
+        # 偶尔把适合诗意表达的普通回复改写成古诗文，但只在本地诗句库中选择，
+        # 不调用 LLM，也不会把每句话都诗化。
+        if (poetry is not None and self._cfg("poetry","enabled",default=True) and
+            random.random() < float(self._cfg("poetry","reply_replace_chance",default=0.10)) and
+            poetry.is_poetry_worthy(cleaned)):
+            cleaned = poetry.pick_poem()
+
         non_plain = [seg for seg in chain if not isinstance(seg, Comp.Plain)]
 
         segments = [cleaned]
@@ -2882,6 +2986,7 @@ class DemonBotPlugin(Star):
         ("token",    ["用量", "tokens"],      "",            "看今天消耗的 token",               "基础", False),
         ("发送日志", ["日志", "运行日志"],     "500/全部",     "私聊把运行日志发给你（仅管理员，仅私聊）", "基础", True),
         ("撤回",     ["删除刚才"],            "",            "引用 bot 消息并发送 /撤回 自动撤回", "其他", False),
+        ("诗",       ["诗句"],                  "",            "来一句古诗文；由本地诗句库生成",       "其他", False),
         ("点赞",     ["赞我"],                 "| 同意5 QQ号 | 撤销 QQ号 | 列表", "主人可立即点赞；可授权好友每日 1~10 赞", "其他", False),
 
         ("梗",       ["查梗"],                "676767",      "联网查一个梗，查完入库",            "词库", False),
@@ -2953,7 +3058,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.9.1"
+    PLUGIN_VERSION = "v2.9.3"
 
     def _command_names(self) -> list:
         names = []
@@ -3037,6 +3142,8 @@ class DemonBotPlugin(Star):
             return await self._cmd_like(event, arg)
         if name == "撤回":
             return await self._recall_replied_message(event)
+        if name == "诗":
+            return self._poetry_pick_text()
         if name == "版本":
             mods = [
                 f"联网模块 {'已加载' if websearch else '缺失'}",
@@ -3871,13 +3978,13 @@ class DemonBotPlugin(Star):
             if lines:
                 p = self._menu_prefix()
                 rendered = [((p + line[1:]) if line.startswith("/") else line) for line in lines]
-                return f"恶魔bot｜{category}指令\n" + "\n".join(rendered)
+                return f"恶魔bot｜{category}指令\n" + "\n".join(rendered) + "\n\n如需新增功能请联系主人。"
         except Exception:
             pass
         lines = self.MENU_GROUPS.get(category)
         if not lines:
             return "没有这个分类，发 /help 看目录"
-        return f"恶魔bot｜{category}指令\n" + "\n".join(lines)
+        return f"恶魔bot｜{category}指令\n" + "\n".join(lines) + "\n\n如需新增功能请联系主人。"
 
     def _cmd_help(self) -> str:
         p = self._menu_prefix()
@@ -3908,11 +4015,39 @@ class DemonBotPlugin(Star):
                 f"{p}控制  开关/冷却/省钱",
                 f"{p}其他指令  低频/诊断/管理员功能",
             ]
-            return "\n".join(lines)
+            return "\n".join(lines) + "\n\n如需新增功能请联系主人。"
 
     def _ensure_persona_file(self):
         if not self.persona_file.exists():
             self._load_or_create_persona()
+
+    def _poetry_pick_text(self) -> str:
+        if poetry is None:
+            return "今夜且听风，也别把自己想得太累。"
+        return poetry.pick_poem()
+
+    async def _poetry_idle_loop(self):
+        await asyncio.sleep(30)
+        while True:
+            try:
+                if (self._cfg("poetry","enabled",default=True) and
+                    self._cfg("poetry","idle_enabled",default=True) and
+                    self._last_owner_message_at and
+                    time.time() - self._last_owner_message_at >= int(self._cfg("poetry","idle_threshold_seconds",default=7200)) and
+                    time.time() - self._last_poetry_push_at >= int(self._cfg("poetry","idle_min_gap_seconds",default=43200)) and
+                    not self._is_sleep_window() and self._known_groups and random.random() < float(self._cfg("poetry","idle_chance",default=0.18))):
+                    gid = random.choice(sorted(self._known_groups))
+                    bot = self._last_bot or getattr(self.context, "bot", None)
+                    if bot is not None:
+                        text = poetry.pick_for_context("idle_owner") if poetry is not None else self._poetry_pick_text()
+                        await bot.api.call_action("send_group_msg", group_id=int(gid), message=text)
+                        self._last_poetry_push_at = time.time()
+                        logger.info(f"[恶魔bot] 许久没见主人发言，向群 {gid} 发了一句诗。")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[恶魔bot] 主动诗句任务跳过：{e}")
+            await asyncio.sleep(max(60, int(self._cfg("poetry","idle_check_interval_seconds",default=900))))
 
     def _cmd_token_usage(self) -> str:
         d=self._usage_reset_if_needed()
@@ -4348,6 +4483,8 @@ class DemonBotPlugin(Star):
         self._save_json(self.like_grants_file, self._like_grants)
         if self._like_daily_task:
             self._like_daily_task.cancel()
+        if self._poetry_idle_task:
+            self._poetry_idle_task.cancel()
 
     async def fetch_image_chain(
         self,
@@ -4774,5 +4911,7 @@ class DemonBotPlugin(Star):
         self._save_json(self.like_grants_file, self._like_grants)
         if self._like_daily_task:
             self._like_daily_task.cancel()
+        if self._poetry_idle_task:
+            self._poetry_idle_task.cancel()
         self._save_json(self.imgtag_file, self._img_tags)
         logger.info("[恶魔bot] 插件已卸载/停用，数据已保存")

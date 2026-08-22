@@ -23,6 +23,8 @@ MAIN_MENU_LINES = [
     "{p}记忆  记住/回忆",
     "{p}控制  开关/冷却/省钱",
     "{p}其他指令  低频/诊断/管理员功能",
+    "",
+    "如需新增功能请联系主人。",
 ]
 
 CATEGORY_MENUS = {
@@ -115,4 +117,4 @@ def render_main(version: str, prefix: str = "/") -> str:
 def render_other(version: str, prefix: str = "/") -> str:
     return f"恶魔bot {version} 其他指令\n前缀：{prefix} 或 == 都行\n\n" + "\n".join(
         line if line.startswith("/") else f"{prefix}{line[1:]}" for line in CATEGORY_MENUS["其他指令"]
-    )
+    ) + "\n\n如需新增功能请联系主人。"

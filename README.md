@@ -98,3 +98,9 @@ LLM 工具：`lookup_slang` `search_web` `remember_slang` `lookup_member` `note_
 ## 依赖
 
 仅 `aiohttp`（AstrBot 自带）。
+
+
+## v2.9.3 新增
+- 精确区分戳一戳 target_id：只对戳到机器人本人的事件回复，戳其他成员直接忽略。群聊戳一戳不再显示 QQ/内部编号。
+- 诗句模块：本地古诗文随机回复；可配置长时间未见主人发言时低频主动发一句。
+- 歌词：默认仅识别歌曲，不自动续写受版权保护的歌词；如你有权使用自己的歌词语料，可在 music_clues.json 中维护。
