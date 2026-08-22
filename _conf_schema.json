@@ -1173,6 +1173,16 @@
         "hint": "默认关。取图失败多半是网络问题，跟 token 无关",
         "type": "bool",
         "default": false
+      },
+      "meal_nudge_enabled": {
+        "description": "饭点被@并问在干嘛时顺带轻轻讨 token",
+        "type": "bool",
+        "default": true
+      },
+      "meal_nudge_chance": {
+        "description": "饭点讨饭话术触发概率",
+        "type": "float",
+        "default": 0.55
       }
     }
   },
@@ -1195,6 +1205,16 @@
         "hint": "超了会截断，避免一大段排版糊到群里",
         "type": "int",
         "default": 60
+      },
+      "auto_comfort_enabled": {
+        "description": "主人情绪低落时自动发送温柔文案",
+        "type": "bool",
+        "default": true
+      },
+      "auto_comfort_chance": {
+        "description": "检测到主人明显伤感内容后的触发概率",
+        "type": "float",
+        "default": 0.85
       }
     }
   },
@@ -1240,6 +1260,40 @@
         "description": "合成超时（秒）",
         "type": "int",
         "default": 30
+      }
+    }
+  },
+  "sleep": {
+    "description": "深夜休眠（省 token）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用深夜休眠",
+        "hint": "23:59 到次日 07:30 不处理群消息、不调用 LLM、不学习",
+        "type": "bool",
+        "default": true
+      },
+      "start_minute": {
+        "description": "休眠开始分钟",
+        "hint": "1439=23:59",
+        "type": "int",
+        "default": 1439
+      },
+      "end_minute": {
+        "description": "休眠结束分钟",
+        "hint": "450=07:30",
+        "type": "int",
+        "default": 450
+      },
+      "start_text": {
+        "description": "休眠开始显示文字",
+        "type": "string",
+        "default": "23:59"
+      },
+      "end_text": {
+        "description": "休眠结束显示文字",
+        "type": "string",
+        "default": "07:30"
       }
     }
   }
