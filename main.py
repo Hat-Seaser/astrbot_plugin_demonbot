@@ -188,6 +188,7 @@ class DemonBotPlugin(Star):
         self.persona_file = self.data_dir / "persona.md"
         self.token_usage_file = self.data_dir / "token_usage.json"
         self.like_usage_file = self.data_dir / "like_usage.json"
+        self.like_grants_file = self.data_dir / "like_grants.json"
 
         self._history: dict = self._load_json(self.history_file, {})
         self._memory: dict = self._load_json(self.memory_file, {})
@@ -202,10 +203,11 @@ class DemonBotPlugin(Star):
             "day": "", "total": 0, "input": 0, "output": 0, "requests": 0,
             "aux_total": 0, "aux_requests": 0, "estimated": 0, "by_source": {}
         })
-        self._like_usage = self._load_json(self.like_usage_file, {
-            "day": "", "user_id": "", "times": 0
-        })
+        self._like_usage = self._load_json(self.like_usage_file, {"day": "", "sent": {}})
+        self._like_grants = self._load_json(self.like_grants_file, {"users": {}})
         self._last_poke_at: dict = {}
+        self._like_daily_task = None
+        self._last_bot = None
         self._friend_request_seen: set = set()
         # 已开启 R18 分区的用户 QQ 号集合（仅私聊 /age>18 可写）
         _r18_raw = self._load_json(self.r18_file, {"users": []})
@@ -279,6 +281,11 @@ class DemonBotPlugin(Star):
         self._last_sponsor_at = 0.0
 
         self._migrate_config()
+        try:
+            self._like_daily_task = asyncio.get_running_loop().create_task(self._daily_like_loop())
+        except RuntimeError:
+            self._like_daily_task = None
+        self._last_bot = None
 
         # ---------- 生活状态 / 表情包 ----------
         self._life = None
@@ -364,6 +371,11 @@ class DemonBotPlugin(Star):
             friend_cfg = self.config.setdefault("friend_request", {})
             friend_cfg.setdefault("auto_accept", True)
             friend_cfg.setdefault("log_requests", True)
+
+            like_cfg = self.config.setdefault("like", {})
+            like_cfg.setdefault("daily_owner", True)
+            like_cfg.setdefault("auto_run_interval_seconds", 600)
+            like_cfg.setdefault("max_times_per_user", 10)
 
             stickers_cfg = self.config.setdefault("stickers", {})
             stickers_cfg.setdefault("enabled", True)
@@ -752,12 +764,17 @@ class DemonBotPlugin(Star):
             return random.choice(lines) if lines else "主人戳我干嘛，我在这儿呢。"
         rec=((self._members.get(group_id) or {}).get("members") or {}).get(str(event.get_sender_id()),{})
         count=int(rec.get("count",0))
+        if event.get_group_id():
+            ident = str(rec.get("code") or f"QQ{event.get_sender_id()}")
+        else:
+            ident = str(event.get_sender_id())
         if count>=100: profile="你都戳我这么多次了，手不累吗"
         elif count>=20: profile="你今天已经来找我很多次啦"
         elif count<=2: profile="刚认识就来戳我呀"
         else: profile="你又来戳我啦"
         lines=getattr(responses,"POKE_LINES",[]) if responses else []
-        return random.choice(lines).format(nick=nick,profile=profile,count=count) if lines else f"{nick}，{profile}。"
+        text = random.choice(lines).format(nick=nick,profile=profile,count=count) if lines else f"{ident}，{profile}。"
+        return re.sub(r"^\s*{nick}[，,：:]\s*".replace("{nick}", re.escape(nick)), f"{ident}，", text, count=1)
 
     def _cfg(self, *keys, default=None):
         """从插件配置里按路径取值，取不到就返回 default。"""
@@ -1551,37 +1568,149 @@ class DemonBotPlugin(Star):
     def _like_today_state(self):
         day = time.strftime("%Y-%m-%d", time.localtime())
         d = self._like_usage if isinstance(self._like_usage, dict) else {}
-        if d.get("day") != day:
-            self._like_usage = {"day": day, "user_id": "", "times": 0}
+        if d.get("day") != day or not isinstance(d.get("sent"), dict):
+            self._like_usage = {"day": day, "sent": {}}
             self._save_json(self.like_usage_file, self._like_usage)
         return self._like_usage
 
-    async def _cmd_like_owner(self, event: AstrMessageEvent) -> str:
-        """主人私聊 /点赞：调用 OneBot send_like，一次最多 10 赞/好友/天。"""
+    async def _is_friend(self, user_id: str, event: AstrMessageEvent | None = None) -> bool:
+        bot = getattr(event, "bot", None) if event is not None else None
+        bot = bot or self._last_bot
+        try:
+            if bot is None:
+                return False
+            api = getattr(bot, "api", bot)
+            ret = await api.call_action("get_friend_list")
+            data = ret.get("data", ret) if isinstance(ret, dict) else ret
+            if not isinstance(data, list):
+                return False
+            target = str(user_id)
+            return any(str(x.get("user_id")) == target for x in data if isinstance(x, dict))
+        except Exception as e:
+            logger.warning(f"[恶魔bot] 检查 QQ 好友失败：{type(e).__name__}: {e}")
+            return False
+
+    async def _send_like(self, event: AstrMessageEvent | None, user_id: str, times: int) -> bool:
+        times = max(1, min(int(times), 10))
+        try:
+            bot = getattr(event, "bot", None) if event is not None else None
+            if bot is None:
+                # 尝试从当前上下文拿连接上的 bot；AstrBot 版本不同，这里只做兼容探测。
+                bot = self._last_bot or getattr(self.context, "bot", None)
+            if bot is None:
+                return False
+            api = getattr(bot, "api", bot)
+            ret = await api.call_action("send_like", user_id=int(user_id), times=times)
+            return not (isinstance(ret, dict) and ret.get("status") == "failed")
+        except Exception as e:
+            logger.warning(f"[恶魔bot] 给 QQ={user_id} 点赞失败：{type(e).__name__}: {e}")
+            return False
+
+    def _like_grant_items(self):
+        users = self._like_grants.get("users", {}) if isinstance(self._like_grants, dict) else {}
+        return users if isinstance(users, dict) else {}
+
+    async def _cmd_like(self, event: AstrMessageEvent, arg: str) -> str:
+        """
+        /点赞                    主人：立即给自己 10 赞；并开启每日自动 10 赞。
+        /点赞 同意5 QQ号       主人：允许某位 QQ 好友每日获得 5 赞。
+        /点赞 同意10 QQ号      同上，10 赞。
+        /点赞 撤销 QQ号        撤销自动点赞授权。
+        /点赞 列表              查看当前授权。
+        """
         if event.get_group_id():
             return "这个要私聊我发啦"
+        sender_id = str(event.get_sender_id())
         if not self._event_is_owner(event):
             return "这个是主人的专属按钮"
-        state = self._like_today_state()
-        if int(state.get("times", 0)) >= 10:
-            return "今天已经给你点满 10 个赞啦，明天再来"
-        sender_id = str(event.get_sender_id())
-        try:
-            await event.bot.api.call_action(
-                "send_like",
-                user_id=int(sender_id),
-                times=10,
-            )
-            self._like_usage = {
-                "day": state.get("day"),
-                "user_id": sender_id,
-                "times": 10,
-            }
-            self._save_json(self.like_usage_file, self._like_usage)
+
+        parts = (arg or "").strip().split()
+        if not parts:
+            target = sender_id
+            ok = await self._send_like(event, target, 10)
+            if not ok:
+                return "刚刚点赞接口没接住，今天的赞还没发出去"
+            state = self._like_today_state()
+            state["sent"][target] = 10
+            self._save_json(self.like_usage_file, state)
             return "好啦，今天的 10 个赞给你安排上了 👍"
-        except Exception as e:
-            logger.warning(f"[恶魔bot] /点赞 调用 send_like 失败：{e}")
-            return "刚刚点赞接口没接住，今天这 10 个赞还没成功发出去"
+
+        action = parts[0]
+        if action.startswith("同意"):
+            m = re.fullmatch(r"同意(\d{1,2})", action)
+            if not m:
+                return "用法：/点赞 同意5 2677518198"
+            times = min(max(int(m.group(1)), 1), 10)
+            if len(parts) < 2 or not parts[1].isdigit():
+                return "还差一个 QQ 号，比如：/点赞 同意5 2677518198"
+            target = str(int(parts[1]))
+            if not await self._is_friend(target, event):
+                return f"QQ {target} 目前不是我的好友，先加我好友再开这个授权"
+            users = self._like_grant_items()
+            users[target] = {"times": times, "granted_by": sender_id, "updated": int(time.time())}
+            self._like_grants["users"] = users
+            self._save_json(self.like_grants_file, self._like_grants)
+            return f"好啦，QQ {target} 以后每天可以收到 {times} 个赞"
+
+        if action == "撤销":
+            if len(parts) < 2 or not parts[1].isdigit():
+                return "用法：/点赞 撤销 2677518198"
+            target = str(int(parts[1]))
+            users = self._like_grant_items()
+            if target not in users:
+                return "这个 QQ 不在自动点赞名单里"
+            users.pop(target, None)
+            self._like_grants["users"] = users
+            self._save_json(self.like_grants_file, self._like_grants)
+            return f"已取消 QQ {target} 的每日点赞"
+
+        if action == "列表":
+            users = self._like_grant_items()
+            if not users:
+                return "目前没有额外的每日点赞授权"
+            lines = ["每日点赞授权："]
+            for uid, info in users.items():
+                lines.append(f"QQ {uid}：每天 {int(info.get('times', 0))} 个")
+            return "\n".join(lines)
+
+        return "用法：/点赞 ｜ /点赞 同意5 2677518198 ｜ /点赞 撤销 2677518198 ｜ /点赞 列表"
+
+    async def _daily_like_loop(self):
+        """每天自动给主人和已授权好友点赞；每个用户每天最多 10 次。"""
+        await asyncio.sleep(15)
+        while True:
+            try:
+                await self._run_daily_likes_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[恶魔bot] 自动点赞任务异常：{type(e).__name__}: {e}")
+            await asyncio.sleep(max(60, int(self._cfg("like", "auto_run_interval_seconds", default=600))))
+
+    async def _run_daily_likes_once(self):
+        if not self._cfg("like", "daily_owner", default=True):
+            return
+        owner = self._primary_owner_qq()
+        if not owner:
+            return
+        state = self._like_today_state()
+        sent = state.setdefault("sent", {})
+        targets = {owner: 10}
+        for uid, info in self._like_grant_items().items():
+            times = min(max(int((info or {}).get("times", 0)), 0), 10)
+            if times:
+                targets[str(uid)] = times
+        for uid, times in targets.items():
+            if int(sent.get(uid, 0)) >= times:
+                continue
+            # 授权用户必须是 bot 好友；主人自己也不强制检查好友状态，避免客户端配置异常时完全漏赞。
+            if uid != owner and not await self._is_friend(uid):
+                continue
+            remaining = times - int(sent.get(uid, 0))
+            if await self._send_like(None, uid, remaining):
+                sent[uid] = times
+                logger.info(f"[恶魔bot] 每日自动点赞成功：QQ={uid}，本日 {times} 个")
+        self._save_json(self.like_usage_file, state)
 
     def query_history(self, group_id: str, keyword: str = "", limit: int = 10):
         bucket = self._history.get(group_id, [])
@@ -1739,6 +1868,7 @@ class DemonBotPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=999)
     async def on_group_message(self, event: AstrMessageEvent):
+        self._last_bot = getattr(event, "bot", None) or self._last_bot
         group_id = event.get_group_id() or "unknown"
         sender_id = str(event.get_sender_id())
         sender = self._clean_nick(event.get_sender_name()) or sender_id
@@ -2752,7 +2882,7 @@ class DemonBotPlugin(Star):
         ("token",    ["用量", "tokens"],      "",            "看今天消耗的 token",               "基础", False),
         ("发送日志", ["日志", "运行日志"],     "500/全部",     "私聊把运行日志发给你（仅管理员，仅私聊）", "基础", True),
         ("撤回",     ["删除刚才"],            "",            "引用 bot 消息并发送 /撤回 自动撤回", "其他", False),
-        ("点赞",     ["赞我"],                 "",            "私聊主人后给主人每日点赞 10 次",      "其他", False),
+        ("点赞",     ["赞我"],                 "| 同意5 QQ号 | 撤销 QQ号 | 列表", "主人可立即点赞；可授权好友每日 1~10 赞", "其他", False),
 
         ("梗",       ["查梗"],                "676767",      "联网查一个梗，查完入库",            "词库", False),
         ("教梗",     [],                      "词=解释",      "手动录入，优先级高于联网结果",       "词库", False),
@@ -2904,7 +3034,7 @@ class DemonBotPlugin(Star):
         if name == "token":
             return self._cmd_token_usage()
         if name == "点赞":
-            return await self._cmd_like_owner(event)
+            return await self._cmd_like(event, arg)
         if name == "撤回":
             return await self._recall_replied_message(event)
         if name == "版本":
@@ -4214,6 +4344,10 @@ class DemonBotPlugin(Star):
         else:
             self._r18_users.discard(uid)
         self._save_json(self.r18_file, {"users": sorted(self._r18_users)})
+        self._save_json(self.like_usage_file, self._like_usage)
+        self._save_json(self.like_grants_file, self._like_grants)
+        if self._like_daily_task:
+            self._like_daily_task.cancel()
 
     async def fetch_image_chain(
         self,
@@ -4636,5 +4770,9 @@ class DemonBotPlugin(Star):
         self._save_json(self.knowledge_file, self._knowledge)
         self._save_json(self.style_file, self._style)
         self._save_json(self.r18_file, {"users": sorted(self._r18_users)})
+        self._save_json(self.like_usage_file, self._like_usage)
+        self._save_json(self.like_grants_file, self._like_grants)
+        if self._like_daily_task:
+            self._like_daily_task.cancel()
         self._save_json(self.imgtag_file, self._img_tags)
         logger.info("[恶魔bot] 插件已卸载/停用，数据已保存")
