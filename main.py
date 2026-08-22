@@ -1918,67 +1918,24 @@ class DemonBotPlugin(Star):
 
     # ==================== 戳一戳 ====================
 
-    def _is_poke_event(self, event: AstrMessageEvent) -> bool:
-        """只把明确的 OneBot/NapCat Poke 通知交给戳一戳处理。
-
-        这个插件的 on_poke 使用 EventMessageType.ALL，因此普通消息也会进入这里。
-        普通消息绝不能因为拿不到 target_id 就 stop_event，否则会把整个消息链截断。
-        """
-        candidates = [
-            getattr(event, "raw_event", None),
-            getattr(getattr(event, "message_obj", None), "raw_event", None),
-            getattr(event, "message_obj", None),
-        ]
-        for obj in candidates:
-            if not isinstance(obj, dict):
-                continue
-            containers = [obj]
-            data = obj.get("data")
-            if isinstance(data, dict):
-                containers.append(data)
-            for container in containers:
-                notice_type = str(container.get("notice_type", "") or "").lower()
-                sub_type = str(container.get("sub_type", "") or "").lower()
-                post_type = str(container.get("post_type", "") or "").lower()
-                # OneBot v11 标准 Poke：post_type=notice, notice_type=notify, sub_type=poke。
-                if sub_type == "poke" or notice_type == "poke":
-                    return True
-                if post_type == "notice" and container.get("target_id") is not None and notice_type == "notify":
-                    # NapCat 某些版本可能省略 sub_type，但仍带 target_id 的 notify。
-                    if container.get("user_id") is not None:
-                        return True
-        return False
-
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_poke(self,event:AstrMessageEvent):
-        # 这是 ALL 事件：普通群聊/私聊会先经过这里，但必须直接放行。
-        if not self._is_poke_event(event):
-            return
-
-        # 明确是 Poke 后，再检查 target_id；戳别人则完全不回复，也不干扰后续普通聊天。
+        # OneBot v11 poke notice 的关键字段是 user_id / target_id。只有 target_id=机器人自己时才响应。
+        # 如果戳的是群里的其他成员，直接 stop_event，避免后续群消息流程误把它当普通消息。
         target_id = self._poke_target_id(event)
         self_id = self._poke_self_id(event)
+        # 没有 target_id 时宁可不回，也不猜；这比误把戳别人当戳 Bot 更安全。
         if not target_id or (self_id and target_id != self_id):
             event.stop_event()
             return
-
         if not self._cfg("poke","enabled",default=True) or self._is_sleep_window():
-            event.stop_event()
-            return
-
+            event.stop_event(); return
         key=f"{event.get_group_id() or 'private'}:{event.get_sender_id()}"
-        now=time.time()
-        cd=int(self._cfg("poke","cooldown_seconds",default=20))
+        now=time.time(); cd=int(self._cfg("poke","cooldown_seconds",default=20))
         if now-self._last_poke_at.get(key,0)<cd:
-            event.stop_event()
-            return
-
+            event.stop_event(); return
         self._last_poke_at[key]=now
-        await self._safe_send(
-            event,
-            self._poke_text(event,event.get_group_id() or "private"),
-            event.get_group_id() or "unknown",
-        )
+        await self._safe_send(event,self._poke_text(event,event.get_group_id() or "private"),event.get_group_id() or "unknown")
         event.stop_event()
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=999)
@@ -3101,7 +3058,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.9.5"
+    PLUGIN_VERSION = "v2.9.3"
 
     def _command_names(self) -> list:
         names = []

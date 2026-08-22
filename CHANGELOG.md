@@ -1,6 +1,5 @@
-# v2.9.5
+# v2.9.6
 
-- 修复 on_poke 使用 ALL 事件导致普通消息被 stop_event 拦截的问题。
-- 只有明确识别为 OneBot/NapCat Poke 通知时才处理戳一戳。
-- 戳到其他人的 Poke 不回复，也不阻断后续消息。
-- 保留 v2.9.4 菜单与诗词功能。
+- 修复 `_known_groups`、`_last_owner_message_at`、`_last_poetry_push_at` 未初始化导致的事件处理崩溃。
+- 修复私聊指令日志使用未定义 `sender` 导致的 NameError。
+- 修复 Poke 事件过滤：非 Poke / 戳别人时不再调用 `stop_event()`，不再吞掉普通聊天和命令。
