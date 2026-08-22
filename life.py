@@ -86,9 +86,6 @@ RANDOM_EVENTS = [
     ("昨晚没睡好，一整天都困", 0.12, -0.20, 0.0),
     ("今天天气很好，心情挺松快", 0.10, 0.20, 0.0),
     ("今天摸鱼一整天，很爽", 0.08, 0.30, -0.25),
-    ("虽然今天是周末，但临时被喊去加班", 0.08, -0.25, 0.35),
-    ("临时多了一趟外快/兼职，晚上会忙一点", 0.06, 0.10, 0.30),
-    ("朋友突然约饭，原来的计划被打乱了", 0.08, 0.22, 0.10),
 ]
 
 
@@ -155,18 +152,6 @@ class LifeState:
             if rng.random() < prob:
                 self.event, self._event_mood, self._event_busy = desc, dm, db
                 break
-
-        if is_weekend and self.event == "虽然今天是周末，但临时被喊去加班":
-            candidates = [b for b in self.timeline if b["label"] in ("下午", "傍晚", "晚上")]
-            if candidates:
-                blk = rng.choice(candidates)
-                blk["activity"] = rng.choice([
-                    "临时去单位加班，手上的活没收尾",
-                    "周末被抓来加班，电脑一开就是半天",
-                    "本来想休息，结果临时多了点工作",
-                ])
-                blk["mood"] = min(blk["mood"], -0.15)
-                blk["busy"] = max(blk["busy"], 0.8)
 
         self.day_key = day_key
         self._told = set()

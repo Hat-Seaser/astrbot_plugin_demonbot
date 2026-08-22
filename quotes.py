@@ -164,10 +164,7 @@ async def fetch_one(
     """
     kind = normalize_kind(kind)
     backends = list(BACKENDS.get(kind) or BACKENDS["一言"])
-    if kind in ("伤感", "温柔", "一言", "晚安"):
-        preferred = [b for b in backends if b[0].startswith("hitokoto")]
-        others = [b for b in backends if not b[0].startswith("hitokoto")]
-        backends = preferred + others
+    random.shuffle(backends)          # 别老薅同一家
     for name, url, mode in backends:
         try:
             raw = await _request(url, timeout=timeout)
@@ -180,11 +177,6 @@ async def fetch_one(
             if mode.startswith("json:"):
                 data = json.loads(raw)
                 text = _dig(data, mode.split(":", 1)[1]) or ""
-                if not text and isinstance(data, dict):
-                    for k in ("content", "qinghua", "hitokoto", "data", "msg", "message", "text"):
-                        if isinstance(data.get(k), str) and data.get(k).strip():
-                            text = data[k]
-                            break
             else:
                 text = raw
         except Exception:  # noqa: BLE001

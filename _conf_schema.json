@@ -445,19 +445,19 @@
       },
       "max_context_messages": {
         "type": "int",
-        "default": 6,
+        "default": 4,
         "description": "每次带给模型的历史条数",
         "hint": "6 条约等于最近 3 轮对话。想让 bot 记性好一点可以调到 10，别超过 20"
       },
       "max_context_chars_per_message": {
         "type": "int",
-        "default": 120,
+        "default": 90,
         "description": "历史里单条消息的字数上限",
         "hint": "超出部分截断。群聊里长消息本来就少，120 字足够"
       },
       "max_system_prompt_chars": {
         "type": "int",
-        "default": 1200,
+        "default": 900,
         "description": "人格提示词字数上限",
         "hint": "人格设定每次请求都要重发一遍。几千字的人格写得再好，也是每条消息都在付钱"
       },
@@ -469,9 +469,14 @@
       },
       "daily_aux_call_limit": {
         "type": "int",
-        "default": 60,
+        "default": 30,
         "description": "后台请求每日上限（0=不限）",
         "hint": "学风格、查梗、插话判断这类用户看不见的请求，一天最多几次"
+      },
+      "max_persona_chars": {
+        "type": "int",
+        "default": 900,
+        "description": "每次请求最多注入的人格档案字符数"
       }
     }
   },
@@ -1173,16 +1178,6 @@
         "hint": "默认关。取图失败多半是网络问题，跟 token 无关",
         "type": "bool",
         "default": false
-      },
-      "meal_nudge_enabled": {
-        "description": "饭点被@并问在干嘛时顺带轻轻讨 token",
-        "type": "bool",
-        "default": true
-      },
-      "meal_nudge_chance": {
-        "description": "饭点讨饭话术触发概率",
-        "type": "float",
-        "default": 0.55
       }
     }
   },
@@ -1205,16 +1200,6 @@
         "hint": "超了会截断，避免一大段排版糊到群里",
         "type": "int",
         "default": 60
-      },
-      "auto_comfort_enabled": {
-        "description": "主人情绪低落时自动发送温柔文案",
-        "type": "bool",
-        "default": true
-      },
-      "auto_comfort_chance": {
-        "description": "检测到主人明显伤感内容后的触发概率",
-        "type": "float",
-        "default": 0.85
       }
     }
   },
@@ -1263,37 +1248,45 @@
       }
     }
   },
-  "sleep": {
-    "description": "深夜休眠（省 token）",
+  "sleep_mode": {
     "type": "object",
+    "description": "夜间休眠",
     "items": {
       "enabled": {
-        "description": "启用深夜休眠",
-        "hint": "23:59 到次日 07:30 不处理群消息、不调用 LLM、不学习",
         "type": "bool",
         "default": true
       },
-      "start_minute": {
-        "description": "休眠开始分钟",
-        "hint": "1439=23:59",
-        "type": "int",
-        "default": 1439
-      },
-      "end_minute": {
-        "description": "休眠结束分钟",
-        "hint": "450=07:30",
-        "type": "int",
-        "default": 450
-      },
-      "start_text": {
-        "description": "休眠开始显示文字",
+      "start": {
         "type": "string",
         "default": "23:59"
       },
-      "end_text": {
-        "description": "休眠结束显示文字",
+      "end": {
         "type": "string",
         "default": "07:30"
+      }
+    }
+  },
+  "persona": {
+    "type": "object",
+    "description": "长期自我人格档案",
+    "items": {
+      "inject": {
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "poke": {
+    "type": "object",
+    "description": "戳一戳回复",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true
+      },
+      "cooldown_seconds": {
+        "type": "int",
+        "default": 20
       }
     }
   }

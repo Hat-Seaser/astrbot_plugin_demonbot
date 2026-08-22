@@ -72,12 +72,6 @@ except Exception as _e:  # noqa: BLE001
     _BOOT_ERRORS.append(f"quotes.py 加载失败：{type(_e).__name__}: {_e}")
 
 try:
-    from . import responses
-except Exception as _e:  # noqa: BLE001
-    responses = None
-    _BOOT_ERRORS.append(f"responses.py 加载失败：{type(_e).__name__}: {_e}")
-
-try:
     from .tools.history_tool import QueryChatHistoryTool
     from .tools.knowledge_tool import LookupSlangTool, SearchWebTool, TeachSlangTool
     from .tools.member_tool import LookupMemberTool, NoteMemberTool
@@ -185,8 +179,6 @@ class DemonBotPlugin(Star):
         # /记住标签 存的自定义「中文词 -> Pixiv 标签」映射，优先级高于 WebUI 里的 keyword_map
         self.imgtag_file = self.data_dir / "image_tags.json"
         self.auto_imgtag_file = self.data_dir / "image_tags_auto.json"
-        self.persona_file = self.data_dir / "persona.md"
-        self.token_usage_file = self.data_dir / "token_usage.json"
 
         self._history: dict = self._load_json(self.history_file, {})
         self._memory: dict = self._load_json(self.memory_file, {})
@@ -196,12 +188,6 @@ class DemonBotPlugin(Star):
             self.knowledge_file, {"slang": {}, "hot": {"time": 0, "items": []}}
         )
         self._style: dict = self._load_json(self.style_file, {"profile": "", "updated": 0})
-        self._persona = self._load_or_create_persona()
-        self._token_usage = self._load_json(self.token_usage_file, {
-            "day": "", "total": 0, "input": 0, "output": 0, "requests": 0,
-            "aux_total": 0, "aux_requests": 0, "estimated": 0, "by_source": {}
-        })
-        self._last_poke_at: dict = {}
         # 已开启 R18 分区的用户 QQ 号集合（仅私聊 /age>18 可写）
         _r18_raw = self._load_json(self.r18_file, {"users": []})
         self._r18_users: set = {str(x) for x in (_r18_raw.get("users") or [])}
@@ -335,38 +321,8 @@ class DemonBotPlugin(Star):
         但老用户的配置里存着 true，升级后仍然一次发四条，看起来像代码没生效。
         """
         try:
-            version = int(self.config.get("_schema_version") or 0)
-
-            # v8：即使老配置已经是旧版 schema，也必须把新默认值写进去。
-            # AstrBot 会持久化旧配置，单纯修改 schema default 对老用户不会生效。
-            sleep_cfg = self.config.setdefault("sleep_mode", {})
-            sleep_cfg.setdefault("enabled", True)
-            sleep_cfg.setdefault("start", "23:59")
-            sleep_cfg.setdefault("end", "07:30")
-
-            persona_cfg = self.config.setdefault("persona", {})
-            persona_cfg.setdefault("enabled", True)
-            persona_cfg.setdefault("file", "persona.md")
-            persona_cfg.setdefault("template", "persona_template.md")
-            persona_cfg.setdefault("max_inject_chars", 900)
-
-            poke_cfg = self.config.setdefault("poke", {})
-            poke_cfg.setdefault("enabled", True)
-            poke_cfg.setdefault("cooldown_seconds", 20)
-            poke_cfg.setdefault("auto_profile", True)
-
-            token_cfg = self.config.setdefault("token_saver", {})
-            token_cfg.setdefault("enabled", True)
-            token_cfg["max_context_messages"] = min(max(int(token_cfg.get("max_context_messages") or 4), 1), 4)
-            token_cfg["max_context_chars_per_message"] = min(max(int(token_cfg.get("max_context_chars_per_message") or 90), 40), 90)
-            token_cfg["max_system_prompt_chars"] = min(max(int(token_cfg.get("max_system_prompt_chars") or 900), 300), 900)
-            token_cfg["max_persona_chars"] = min(max(int(token_cfg.get("max_persona_chars") or 900), 300), 900)
-            token_cfg.setdefault("daily_aux_calls", 30)
-
+            version = self.config.get("_schema_version") or 0
             if version >= 5:
-                self.config["_schema_version"] = max(version, 8)
-                if hasattr(self.config, "save_config"):
-                    self.config.save_config()
                 return
             if version >= 4:
                 # ---- v5：表情包 / 生活状态 / 主人 / 求赞助 / 文案 / 多模态 ----
@@ -512,135 +468,6 @@ class DemonBotPlugin(Star):
             tmp.replace(path)
         except Exception as e:
             logger.warning(f"[恶魔bot] 写入 {path} 失败：{e}")
-
-    def _usage_day_key(self) -> str:
-        offset = self._cfg("peak_hours", "utc_offset_hours", default=8)
-        return time.strftime("%Y-%m-%d", time.gmtime(time.time() + offset * 3600))
-
-    def _usage_reset_if_needed(self) -> dict:
-        day = self._usage_day_key()
-        if self._token_usage.get("day") != day:
-            self._token_usage = {"day": day, "total": 0, "input": 0, "output": 0,
-                                 "requests": 0, "aux_total": 0, "aux_requests": 0,
-                                 "estimated": 0, "by_source": {}}
-            self._save_json(self.token_usage_file, self._token_usage)
-        return self._token_usage
-
-    @staticmethod
-    def _usage_int(obj, key: str) -> int:
-        try:
-            v = getattr(obj, key, None)
-            if v is None and isinstance(obj, dict):
-                v = obj.get(key)
-            return max(0, int(v or 0))
-        except Exception:
-            return 0
-
-    def _record_usage(self, usage=None, source: str = "chat"):
-        data = self._usage_reset_if_needed()
-        if usage is None:
-            return
-        inp = self._usage_int(usage, "prompt_tokens") or self._usage_int(usage, "input_tokens") or self._usage_int(usage, "input")
-        out = self._usage_int(usage, "completion_tokens") or self._usage_int(usage, "output_tokens") or self._usage_int(usage, "output")
-        total = self._usage_int(usage, "total_tokens") or self._usage_int(usage, "total") or inp + out
-        if total <= 0:
-            return
-        data["input"] += inp; data["output"] += out; data["total"] += total; data["requests"] += 1
-        data.setdefault("by_source", {})[source] = data.setdefault("by_source", {}).get(source, 0) + total
-        if source.startswith("aux"):
-            data["aux_total"] += total; data["aux_requests"] += 1
-        self._save_json(self.token_usage_file, data)
-
-    def _load_or_create_persona(self) -> str:
-        if self.persona_file.exists():
-            try:
-                return self.persona_file.read_text(encoding="utf-8").strip()
-            except Exception as e:
-                logger.warning(f"[恶魔bot] 读取人格档案失败：{e}")
-        template = Path(__file__).resolve().parent / "persona_template.md"
-        if template.exists():
-            try:
-                content = template.read_text(encoding="utf-8").strip()
-                self.persona_file.write_text(content + "\n", encoding="utf-8")
-                return content
-            except Exception as e:
-                logger.warning(f"[恶魔bot] 创建人格档案失败：{e}")
-        return "# 焦糖｜长期自我档案\n\n## 身份\n- 名字：焦糖\n- 身份：QQ群聊天机器人\n"
-
-    def _save_persona(self, content: str):
-        content = (content or "").strip() + "\n"
-        tmp = self.persona_file.with_suffix(".md.tmp")
-        try:
-            tmp.write_text(content, encoding="utf-8"); tmp.replace(self.persona_file); self._persona=content.strip()
-        except Exception as e:
-            logger.warning(f"[恶魔bot] 保存人格档案失败：{e}")
-
-    def _persona_fragment(self) -> str:
-        if not self._cfg("persona", "inject", default=True):
-            return ""
-        cap = int(self._cfg("token_saver", "max_persona_chars", default=900))
-        lines=[]; n=0
-        for line in self._persona.splitlines():
-            if n + len(line) + 1 > cap: break
-            lines.append(line); n += len(line) + 1
-        return "\n\n[焦糖长期自我档案]\n" + "\n".join(lines)
-
-    def _is_sleep_window(self) -> bool:
-        if not self._cfg("sleep_mode", "enabled", default=True):
-            return False
-        def mins(s, default):
-            try:
-                h,m=str(s).split(":",1); return int(h)*60+int(m)
-            except Exception: return default
-        start=mins(self._cfg("sleep_mode","start",default="23:59"),1439)
-        end=mins(self._cfg("sleep_mode","end",default="07:30"),450)
-        now=self._bj_minutes()
-        return now >= start or now < end if start > end else start <= now < end
-
-    def _sleep_remaining(self) -> str:
-        if not self._is_sleep_window(): return "未休眠"
-        end_s=self._cfg("sleep_mode","end",default="07:30")
-        try:
-            h,m=map(int,str(end_s).split(":",1)); end=h*60+m
-        except Exception: end=450
-        now=self._bj_minutes(); left=(end-now)%1440
-        return f"{left//60}小时{left%60}分"
-
-    def _is_recharge_notice(self, text: str) -> bool:
-        t=(text or "").lower().replace(" ","")
-        return bool(re.search(r"(充值token|充token|token充好了|token到账|补token|续token|已经充值token)", t))
-
-    def _owner_recharge_reply(self) -> str:
-        lines=getattr(responses,"OWNER_RECHARGE_THANKS",[]) if responses else []
-        return random.choice(lines) if lines else "收到啦主人，token续上了，谢谢主人🥹"
-
-    async def _recall_replied_message(self,event:AstrMessageEvent)->str:
-        target=None; sender=None
-        for seg in list(getattr(event.message_obj,"message",[]) or []):
-            if isinstance(seg,Comp.Reply):
-                target=getattr(seg,"message_id",None) or getattr(seg,"id",None); sender=getattr(seg,"sender_id",None); break
-        if not target: return "没有检测到你引用的消息"
-        self_id=str(getattr(event.message_obj,"self_id","") or "")
-        if sender is not None and self_id and str(sender)!=self_id: return "你引用的不是我的消息"
-        try:
-            await event.bot.api.call_action("delete_msg", message_id=int(target)); return "撤回好了"
-        except Exception as e:
-            logger.warning(f"[恶魔bot] 撤回消息失败：{e}")
-            return "撤回失败，可能已经过了 QQ 的可撤回时间"
-
-    def _poke_text(self,event:AstrMessageEvent,group_id:str)->str:
-        nick=self._clean_nick(event.get_sender_name()) or str(event.get_sender_id())
-        if self._event_is_owner(event):
-            lines=getattr(responses,"POKE_OWNER",[]) if responses else []
-            return random.choice(lines) if lines else "主人戳我干嘛，我在这儿呢。"
-        rec=((self._members.get(group_id) or {}).get("members") or {}).get(str(event.get_sender_id()),{})
-        count=int(rec.get("count",0))
-        if count>=100: profile="你都戳我这么多次了，手不累吗"
-        elif count>=20: profile="你今天已经来找我很多次啦"
-        elif count<=2: profile="刚认识就来戳我呀"
-        else: profile="你又来戳我啦"
-        lines=getattr(responses,"POKE_LINES",[]) if responses else []
-        return random.choice(lines).format(nick=nick,profile=profile,count=count) if lines else f"{nick}，{profile}。"
 
     def _cfg(self, *keys, default=None):
         """从插件配置里按路径取值，取不到就返回 default。"""
@@ -969,7 +796,6 @@ class DemonBotPlugin(Star):
             resp = await asyncio.wait_for(
                 prov.text_chat(prompt=prompt, system_prompt=system_prompt), timeout=timeout
             )
-            self._record_usage(getattr(resp, "usage", None), source="aux")
             return (resp.completion_text or "").strip()
         except Exception as e:
             logger.debug(f"[恶魔bot] 辅助LLM调用失败：{type(e).__name__}: {e}")
@@ -1504,25 +1330,6 @@ class DemonBotPlugin(Star):
 
     # ==================== 核心：群消息拦截 ====================
 
-    # ==================== 戳一戳 ====================
-
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
-    async def on_poke(self,event:AstrMessageEvent):
-        try: chain=list(event.message_obj.message or [])
-        except Exception: chain=[]
-        poke_cls = getattr(Comp, "Poke", None)
-        if poke_cls is None or not any(isinstance(seg, poke_cls) for seg in chain):
-            return
-        if not self._cfg("poke","enabled",default=True) or self._is_sleep_window():
-            event.stop_event(); return
-        key=f"{event.get_group_id() or 'private'}:{event.get_sender_id()}"
-        now=time.time(); cd=int(self._cfg("poke","cooldown_seconds",default=20))
-        if now-self._last_poke_at.get(key,0)<cd:
-            event.stop_event(); return
-        self._last_poke_at[key]=now
-        await self._safe_send(event,self._poke_text(event,event.get_group_id() or "private"),event.get_group_id() or "unknown")
-        event.stop_event()
-
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=999)
     async def on_group_message(self, event: AstrMessageEvent):
         group_id = event.get_group_id() or "unknown"
@@ -1540,19 +1347,8 @@ class DemonBotPlugin(Star):
             for seg in event.message_obj.message
         )
 
-        # 固定深夜休眠：轻量指令可用，普通聊天/@/学习全部停止。
-        if self._is_sleep_window():
-            cmd0, _, _ = self._parse_command(event)
-            wake_cmds={"帮助","状态","自检","版本","token","撤回"}
-            if cmd0 not in wake_cmds:
-                event.stop_event(); return
-
         self.register_member(group_id, sender_id, sender)
         self.record_message(group_id, sender, text if text else "[非文本消息]")
-
-        if self._event_is_owner(event) and self._is_recharge_notice(text):
-            yield event.plain_result(self._owner_recharge_reply())
-            event.stop_event(); return
 
         # ---------- 第一优先级：指令。命中就自己回、自己截断，绝不进聊天流程 ----------
         cmd_name, cmd_arg, unknown_cmd = self._parse_command(event)
@@ -1762,12 +1558,6 @@ class DemonBotPlugin(Star):
         """
         sender_id = str(event.get_sender_id())
         sender = self._clean_nick(event.get_sender_name()) or sender_id
-        text = _CTRL_RE.sub("", event.message_str or "")
-
-        if self._event_is_owner(event) and self._is_recharge_notice(text):
-            yield event.plain_result(self._owner_recharge_reply())
-            event.stop_event()
-            return
 
         cmd_name, cmd_arg, unknown_cmd = self._parse_command(event)
         if cmd_name is None:
@@ -1907,8 +1697,6 @@ class DemonBotPlugin(Star):
 
     def _aux_llm_allowed(self) -> bool:
         """后台辅助请求现在能不能发。"""
-        if self._is_sleep_window():
-            return False
         if self.in_peak_hours() and self._cfg("peak_hours", "block_background_llm", default=True):
             return False
         limit = self._cfg("token_saver", "daily_aux_call_limit", default=60)
@@ -2008,8 +1796,6 @@ class DemonBotPlugin(Star):
     async def on_llm_request(self, event: AstrMessageEvent, req):
         group_id = event.get_group_id() or "unknown"
         text = _CTRL_RE.sub("", event.message_str or "")
-        if self._is_sleep_window():
-            return
 
         # ===== 省钱第一刀，也是最重要的一刀：把带给模型的历史对话砍短 =====
         # 账单里最大的一块从来不是"bot 回了多长"，而是每次请求重新上传的上下文。
@@ -2048,8 +1834,8 @@ class DemonBotPlugin(Star):
                 )
 
         # 4) 最近几句话分别是谁说的，供「刚才那个人是谁」这类问题定位
-        if self._cfg("members", "inject_recent_context", default=True) and (not smart or self._mentions_person(text) or self._event_is_owner(event)):
-            ctx = self._recent_context(group_id, self._cfg("members", "recent_context_lines", default=3))
+        if self._cfg("members", "inject_recent_context", default=True):
+            ctx = self._recent_context(group_id, self._cfg("members", "recent_context_lines", default=4))
             if ctx:
                 fragments.append("\n\n[刚才几句话分别是谁说的，注意区分不同的人]\n" + ctx)
 
@@ -2105,8 +1891,8 @@ class DemonBotPlugin(Star):
         """
         if not self._cfg("token_saver", "enabled", default=True):
             return
-        max_msgs = self._cfg("token_saver", "max_context_messages", default=4)
-        max_chars = self._cfg("token_saver", "max_context_chars_per_message", default=90)
+        max_msgs = self._cfg("token_saver", "max_context_messages", default=6)
+        max_chars = self._cfg("token_saver", "max_context_chars_per_message", default=120)
         try:
             ctx = getattr(req, "contexts", None)
             if isinstance(ctx, list) and ctx:
@@ -2134,7 +1920,7 @@ class DemonBotPlugin(Star):
                     logger.debug(f"[恶魔bot] 上下文裁剪：{before} → {len(new_ctx)} 条")
 
             # 人格提示词本身也可能是几千字的长文，同样每次都要重付
-            cap = self._cfg("token_saver", "max_system_prompt_chars", default=900)
+            cap = self._cfg("token_saver", "max_system_prompt_chars", default=1200)
             sp = getattr(req, "system_prompt", "") or ""
             if 0 < cap < len(sp):
                 req.system_prompt = sp[:cap]
@@ -2356,15 +2142,6 @@ class DemonBotPlugin(Star):
             return
         chain = result.chain
         group_id = event.get_group_id() or "unknown"
-        try:
-            usage = getattr(result, "usage", None)
-            if usage is None and getattr(result, "raw_completion", None) is not None:
-                usage = getattr(result.raw_completion, "usage", None)
-            if usage is not None and not getattr(event, "_demonbot_usage_recorded", False):
-                self._record_usage(usage, source="chat")
-                event._demonbot_usage_recorded = True
-        except Exception as e:
-            logger.debug(f"[恶魔bot] 记录 token 用量失败：{e}")
 
         full_text = "".join(seg.text for seg in chain if isinstance(seg, Comp.Plain))
         if not full_text.strip():
@@ -2496,9 +2273,7 @@ class DemonBotPlugin(Star):
         ("状态",     ["恶魔状态"],            "",            "运行状态总览",                     "基础", False),
         ("自检",     ["诊断"],                "",            "逐项体检，插件出问题先发这个",       "基础", False),
         ("版本",     ["ver"],                 "",            "看插件版本和已加载的模块",          "基础", False),
-        ("token",    ["用量", "tokens"],      "",            "看今天消耗的 token",               "基础", False),
         ("发送日志", ["日志", "运行日志"],     "500/全部",     "私聊把运行日志发给你（仅管理员，仅私聊）", "基础", True),
-        ("撤回",     ["删除刚才"],            "",            "引用 bot 消息并发送 /撤回 自动撤回", "其他", False),
 
         ("梗",       ["查梗"],                "676767",      "联网查一个梗，查完入库",            "词库", False),
         ("教梗",     [],                      "词=解释",      "手动录入，优先级高于联网结果",       "词库", False),
@@ -2553,10 +2328,6 @@ class DemonBotPlugin(Star):
         ("风格",     [],                      "",            "看当前学到的风格速记",              "人格", False),
         ("重置风格", [],                      "",            "清掉风格速记，下次重新学",           "人格", True),
         ("心情",     [],                      "",            "看当前心情值和时段状态",            "人格", False),
-        ("发送人格", ["人格文件", "看人格"],     "",            "私聊发送当前长期自我档案",            "人格", False),
-        ("添加人格", [],                       "内容",         "追加长期自我信息",                  "人格", True),
-        ("替换人格", [],                       "完整内容",      "替换整份长期自我档案",              "人格", True),
-        ("记住信息", ["记住自己"],             "内容",         "写入长期自我档案",                  "人格", True),
 
         ("记住",     [],                      "内容",         "让它记住一件事",                   "记忆", False),
         ("回忆",     [],                      "关键词",       "翻出记住过的事",                   "记忆", False),
@@ -2569,7 +2340,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.8.0"
+    PLUGIN_VERSION = "v2.6.0"
 
     def _command_names(self) -> list:
         names = []
@@ -2637,8 +2408,7 @@ class DemonBotPlugin(Star):
             return self._cmd_help()
         # 一级分类菜单：无参数时展开二级菜单；有参数时交给原业务指令继续处理。
         category_menu_names = {
-            "插图": "插图", "表情": "表情", "词库": "词库", "联网": "联网",
-            "群友": "群友", "生活": "生活", "文案": "文案", "多模态": "多模态",
+            "插图": "插图", "联网": "联网", "生活": "生活", "多模态": "多模态",
             "人格": "人格", "记忆": "记忆", "控制": "控制", "其他指令": "其他指令",
         }
         if name in category_menu_names and not arg.strip():
@@ -2647,10 +2417,6 @@ class DemonBotPlugin(Star):
             return self._cmd_status(group_id)
         if name == "自检":
             return await self._cmd_selfcheck(event, group_id)
-        if name == "token":
-            return self._cmd_token_usage()
-        if name == "撤回":
-            return await self._recall_replied_message(event)
         if name == "版本":
             mods = [
                 f"联网模块 {'已加载' if websearch else '缺失'}",
@@ -3017,10 +2783,7 @@ class DemonBotPlugin(Star):
             if not urls:
                 return "没看到图。把图和 /识图 一起发，或者回复那张图再发 /识图"
             answer = await self._vision_describe(event, urls, arg or "")
-            if answer:
-                return answer
-            lines = getattr(responses, "VISION_NOT_READY", []) if responses else []
-            return random.choice(lines) if lines else "这张图我现在还看不懂，给当前会话换个支持视觉的模型，我再认真看。"
+            return answer or "看不了这张图，可能是当前模型不支持看图（要用 vision 模型）"
 
         if name == "说":
             if not arg:
@@ -3028,8 +2791,10 @@ class DemonBotPlugin(Star):
             ok = await self._send_voice(event, group_id, arg.strip())
             if ok:
                 return ""
-            lines = getattr(responses, "TTS_NOT_READY", []) if responses else []
-            return random.choice(lines) if lines else "我也想给你开口说话，可惜嗓子还没接上，主人有空给我配个 TTS。"
+            return (
+                "语音发不出去。需要先在 AstrBot 的「服务提供商」里配一个 TTS，"
+                "并在会话里启用；协议端也得支持发语音"
+            )
 
         # ---------- 群友 ----------
         if name == "群友":
@@ -3082,37 +2847,6 @@ class DemonBotPlugin(Star):
             self._style = {"profile": "", "updated": 0}
             self._save_json(self.style_file, self._style)
             return "风格速记已清空，下次回复时会重新学"
-
-        if name == "发送人格":
-            if event.get_group_id():
-                return "人格档案只在私聊发"
-            self._ensure_persona_file()
-            try:
-                if await self._send_local_file(event, self.persona_file, "jiao_tang_persona.md"):
-                    return "人格档案发给你了"
-            except Exception:
-                pass
-            return [Comp.File(file=str(self.persona_file), name="jiao_tang_persona.md")]
-
-        if name in ("添加人格", "记住信息"):
-            if not is_admin:
-                return "这个只让主人改"
-            if not arg.strip():
-                return f"用法：/{name} 内容"
-            if name == "记住信息":
-                content = self._persona.rstrip() + "\n\n## 主人补充的长期信息\n- " + arg.strip()
-            else:
-                content = self._persona.rstrip() + "\n- " + arg.strip()
-            self._save_persona(content)
-            return "已经写进长期自我档案了"
-
-        if name == "替换人格":
-            if not is_admin:
-                return "这个只让主人改"
-            if not arg.strip():
-                return "用法：/替换人格 完整人格内容"
-            self._save_persona(arg.strip())
-            return "旧人格已经替换成新的了"
 
         if name == "心情":
             score = float(self._mood.get("score", 0.0))
@@ -3443,10 +3177,6 @@ class DemonBotPlugin(Star):
             "/学风格  重新学习群聊说话风格",
             "/风格  查看当前风格速记",
             "/心情  查看当前心情",
-            "/发送人格  私聊发送长期自我档案",
-            "/记住信息 内容  写入长期自我档案",
-            "/添加人格 内容  追加长期人格信息",
-            "/替换人格 内容  替换整份人格档案",
             "/重置风格  清除风格速记（管理员）",
         ],
         "记忆": [
@@ -3463,8 +3193,6 @@ class DemonBotPlugin(Star):
             "/概率 0.1  修改普通群友插话概率（管理员）",
         ],
         "其他指令": [
-            "/token  查看今天消耗的 token",
-            "/撤回  引用 bot 消息后撤回",
             "/发送日志 500/全部  私聊发送运行日志（管理员）",
             "/图源测试  检查图源和图片规格",
             "/标签表  查看全部自定义 Pixiv 标签映射",
@@ -3479,15 +3207,6 @@ class DemonBotPlugin(Star):
         return (self._cfg("commands", "prefixes", default=None) or ["/"])[0]
 
     def _cmd_category_menu(self, category: str) -> str:
-        try:
-            from . import command_menu
-            lines = list(command_menu.CATEGORY_MENUS.get(category, []))
-            if lines:
-                p = self._menu_prefix()
-                rendered = [((p + line[1:]) if line.startswith("/") else line) for line in lines]
-                return f"恶魔bot｜{category}指令\n" + "\n".join(rendered)
-        except Exception:
-            pass
         lines = self.MENU_GROUPS.get(category)
         if not lines:
             return "没有这个分类，发 /help 看目录"
@@ -3495,45 +3214,27 @@ class DemonBotPlugin(Star):
 
     def _cmd_help(self) -> str:
         p = self._menu_prefix()
-        try:
-            from . import command_menu
-            return command_menu.render_main(self.PLUGIN_VERSION, p)
-        except Exception:
-            lines = [
-                f"恶魔bot {self.PLUGIN_VERSION}",
-                f"常用指令（前缀 {p} 或 == 都行）",
-                "",
-                "【核心】",
-                f"{p}状态  运行状态总览",
-                f"{p}自检  插件出问题先发这个",
-                f"{p}版本  查看版本和已加载的模块",
-                "",
-                "【功能目录】",
-                f"{p}插图  图片/Pixiv/R18",
-                f"{p}表情  表情包",
-                f"{p}词库  梗词学习",
-                f"{p}联网  搜索/热搜",
-                f"{p}群友  群友档案",
-                f"{p}生活  作息/主人",
-                f"{p}文案  文案",
-                f"{p}多模态  识图/语音",
-                f"{p}人格  风格/心情",
-                f"{p}记忆  记住/回忆",
-                f"{p}控制  开关/冷却/省钱",
-                f"{p}其他指令  低频/诊断/管理员功能",
-            ]
-            return "\n".join(lines)
-
-    def _ensure_persona_file(self):
-        if not self.persona_file.exists():
-            self._load_or_create_persona()
-
-    def _cmd_token_usage(self) -> str:
-        d=self._usage_reset_if_needed()
-        return (f"今天 token：{int(d.get('total',0)):,}\n"
-                f"输入：{int(d.get('input',0)):,}｜输出：{int(d.get('output',0)):,}\n"
-                f"请求：{int(d.get('requests',0))} 次｜后台辅助：{int(d.get('aux_total',0)):,} token\n"
-                f"省钱模式：{'开' if self._cfg('token_saver','enabled',default=True) else '关'}")
+        return (
+            f"恶魔bot {self.PLUGIN_VERSION}\n"
+            f"常用指令（前缀 {p} 或 == 都行）\n\n"
+            f"【核心】\n"
+            f"{p}状态  运行状态总览\n"
+            f"{p}自检  插件出问题先发这个\n"
+            f"{p}版本  查看版本和已加载模块\n\n"
+            f"【功能目录】\n"
+            f"{p}插图  图片/Pixiv/R18\n"
+            f"{p}表情  表情包\n"
+            f"{p}词库  梗词学习\n"
+            f"{p}联网  搜索/热搜\n"
+            f"{p}群友  群友档案\n"
+            f"{p}生活  作息/主人\n"
+            f"{p}文案  文案\n"
+            f"{p}多模态  识图/语音\n"
+            f"{p}人格  风格/心情\n"
+            f"{p}记忆  记住/回忆\n"
+            f"{p}控制  开关/冷却/省钱\n"
+            f"{p}其他指令  低频/诊断/管理员功能"
+        )
 
     def _cmd_status(self, group_id: str) -> str:
         now = time.time()
@@ -3543,8 +3244,6 @@ class DemonBotPlugin(Star):
 
         book = self._members.get(group_id) or {}
         seg_on = self._cfg("segment_reply", "enabled", default=False)
-        sleep_line = (f"是，剩 {self._sleep_remaining()}" if self._is_sleep_window() else "否（23:59-07:30）")
-        token_today = int(self._usage_reset_if_needed().get("total", 0))
         return "\n".join(
             [
                 f"恶魔bot {self.PLUGIN_VERSION}｜会话：{group_id}",
@@ -3566,7 +3265,6 @@ class DemonBotPlugin(Star):
                 f"风格速记：{'有' if self._style.get('profile') else '无'}｜"
                 f"热搜缓存：{len(self._knowledge.get('hot', {}).get('items', []))} 条",
                 f"启动告警：{len(self._boot_errors)} 条" + ("（发 /自检 看详情）" if self._boot_errors else ""),
-                f"夜间休眠：{sleep_line}｜今日 token：{token_today:,}",
             ]
         )
     
@@ -4206,7 +3904,6 @@ class DemonBotPlugin(Star):
                 ),
                 timeout=self._cfg("vision", "timeout_seconds", default=40),
             )
-            self._record_usage(getattr(resp, "usage", None), source="vision")
             text = (getattr(resp, "completion_text", "") or "").strip()
             return self._shorten(self._strip_markdown(text))
         except asyncio.TimeoutError:
