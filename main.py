@@ -554,7 +554,10 @@ class DemonBotPlugin(Star):
     def _load_or_create_persona(self) -> str:
         if self.persona_file.exists():
             try:
-                return self.persona_file.read_text(encoding="utf-8").strip()
+                content = self.persona_file.read_text(encoding="utf-8").strip()
+                # 修正旧模板曾经出现过的日期笔误，不覆盖主人后来写入的其它人格信息。
+                content = content.replace("生日：8月124日", "生日：8月24日")
+                return content
             except Exception as e:
                 logger.warning(f"[恶魔bot] 读取人格档案失败：{e}")
         template = Path(__file__).resolve().parent / "persona_template.md"
@@ -575,15 +578,111 @@ class DemonBotPlugin(Star):
         except Exception as e:
             logger.warning(f"[恶魔bot] 保存人格档案失败：{e}")
 
-    def _persona_fragment(self) -> str:
+    def _persona_fragment(self, text: str = "") -> str:
+        """把长期人格档案以“相关优先”的方式注入当前请求。
+
+        关键点：
+        1. persona.md 是全局文件，不区分群聊/私聊。
+        2. 普通聊天只注入一张很短的“身份卡”，减少 token。
+        3. 如果用户问到生日/身高/MBTI/主人等人格字段，则优先抽取对应行，
+           保证刚刚通过 /记住信息 写入的内容能被下一条消息立即看到。
+        """
         if not self._cfg("persona", "inject", default=True):
             return ""
-        cap = int(self._cfg("token_saver", "max_persona_chars", default=900))
-        lines=[]; n=0
-        for line in self._persona.splitlines():
-            if n + len(line) + 1 > cap: break
-            lines.append(line); n += len(line) + 1
-        return "\n\n[焦糖长期自我档案]\n" + "\n".join(lines)
+
+        raw = (self._persona or "").strip()
+        if not raw:
+            return ""
+
+        cap = int(self._cfg("persona", "max_inject_chars", default=700) or 700)
+        cap = max(250, min(cap, 900))
+        text_l = (text or "").lower()
+
+        # 常见的“自我查询”触发词；命中时允许注入更多档案字段。
+        detail_words = (
+            "生日", "几岁", "年龄", "身高", "体重", "三围", "鞋码", "血型",
+            "星座", "mbti", "性别", "住哪", "城市", "职业", "名字", "叫什么",
+            "是谁", "你是谁", "你叫什么", "你的设定", "人格", "自我介绍",
+            "主人", "生日是哪天", "哪天生日"
+        )
+        detailed = any(w in text_l for w in detail_words)
+
+        lines = [x.strip() for x in raw.splitlines() if x.strip()]
+        # 优先保留最近新增的主人补充内容；然后寻找与当前问题相关的字段。
+        supplement = []
+        relevant = []
+        identity = []
+
+        for line in lines:
+            norm = line.lstrip("-*• ").strip()
+            low = norm.lower()
+            if "主人补充的长期信息" in low:
+                continue
+            if "主人补充" in low:
+                continue
+
+            if any(k in low for k in ("名字：", "名字:", "角色：", "角色:", "主人：", "主人:",
+                                      "主人 qq", "主人qq", "设定年龄", "生日：", "生日:",
+                                      "性别设定", "职业设定")):
+                identity.append(norm)
+
+            if any(k.lower() in low for k in detail_words):
+                relevant.append(norm)
+
+        # 只抽取最近一段“主人补充”内容，避免旧聊天日志/大段人格正文挤占输入。
+        for i, line in enumerate(lines):
+            if "主人补充的长期信息" in line:
+                for x in lines[i + 1:]:
+                    if x.startswith("## ") and x != line:
+                        break
+                    if x.startswith("-"):
+                        supplement.append(x.lstrip("- ").strip())
+
+        # 去重并保持顺序。
+        def uniq(seq):
+            out = []
+            seen = set()
+            for x in seq:
+                if x and x not in seen:
+                    seen.add(x)
+                    out.append(x)
+            return out
+
+        identity = uniq(identity)
+        relevant = uniq(relevant)
+        supplement = uniq(supplement)
+
+        selected = []
+        if detailed:
+            selected.extend(relevant)
+            selected.extend(identity)
+            selected.extend(supplement[-8:])
+        else:
+            # 普通聊天只给最少量的身份连续性信息。
+            selected.extend(identity[:6])
+            selected.extend(supplement[-3:])
+
+        # 如果字段提取为空，至少让模型知道自己叫焦糖。
+        if not selected:
+            selected = ["名字：焦糖", "角色：主人的私人小助手"]
+
+        selected = uniq(selected)
+
+        out = []
+        n = 0
+        for line in selected:
+            piece = f"- {line}"
+            if n + len(piece) + 1 > cap:
+                break
+            out.append(piece)
+            n += len(piece) + 1
+
+        if not out:
+            return ""
+
+        mode = "相关人格档案" if detailed else "长期身份卡"
+        return f"\n\n[焦糖{mode}]\n" + "\n".join(out) + \
+            "\n[上述内容是焦糖自己的长期资料；与普通聊天历史无关，优先相信它。]"
 
     def _is_sleep_window(self) -> bool:
         if not self._cfg("sleep_mode", "enabled", default=True):
@@ -2020,6 +2119,13 @@ class DemonBotPlugin(Star):
         smart = saver and self._cfg("token_saver", "smart_inject", default=True)
         fragments = []
 
+        # 长期人格是全局共享档案，不依赖当前群聊/私聊会话。
+        # 必须在每次 LLM 请求前重新从 self._persona 构造片段，否则
+        # /记住信息 刚写入的内容下一条消息仍然无法被模型看到。
+        persona_fragment = self._persona_fragment(text)
+        if persona_fragment:
+            fragments.append(persona_fragment)
+
         # 1) 当前是谁在说话——这条必须排在最前面，也是「我是谁」被答错的根因：
         #    模型原本只看得到一句孤零零的消息文本，看不到发送者，
         #    于是默认按名单里最显眼的那个人（管理员）来猜。
@@ -2095,6 +2201,14 @@ class DemonBotPlugin(Star):
                 req.prompt = fragment + "\n\n" + (req.prompt or "")
         except Exception as e:
             logger.warning(f"[恶魔bot] 注入 prompt 失败：{e}")
+        # 注入完成后再做一次总长度保护，避免人格片段被后面的处理阶段撑爆。
+        try:
+            cap = self._cfg("token_saver", "max_system_prompt_chars", default=900)
+            if hasattr(req, "system_prompt") and 0 < cap < len(req.system_prompt or ""):
+                # 人格片段已经放在最前面，因此裁剪时优先保留人格与发言人信息。
+                req.system_prompt = (req.system_prompt or "")[:cap]
+        except Exception as e:
+            logger.debug(f"[恶魔bot] 最终 system prompt 裁剪失败：{e}")
 
     def _trim_request_context(self, req) -> None:
         """裁剪这次 LLM 请求要上传的历史对话和人格提示词。
