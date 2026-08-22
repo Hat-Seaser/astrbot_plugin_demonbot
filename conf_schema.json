@@ -113,7 +113,7 @@
       "results_per_query": {
         "description": "每次搜索取几条结果",
         "type": "int",
-        "default": 12
+        "default": 22
       },
       "http_timeout_seconds": {
         "description": "单次网络请求超时（秒）",
@@ -129,7 +129,7 @@
       "max_lookups_per_message": {
         "description": "一条消息最多查几个新词",
         "type": "int",
-        "default": 1
+        "default": 2
       },
       "total_lookup_timeout_seconds": {
         "description": "查词总超时（秒），超了就放弃注入直接回复",
@@ -162,7 +162,7 @@
       "hot_refresh_hours": {
         "description": "热搜刷新间隔（小时）",
         "type": "int",
-        "default": 12
+        "default": 6
       },
       "hot_topics_count": {
         "description": "每次抓多少条热搜",
@@ -445,19 +445,19 @@
       },
       "max_context_messages": {
         "type": "int",
-        "default": 4,
+        "default": 6,
         "description": "每次带给模型的历史条数",
         "hint": "6 条约等于最近 3 轮对话。想让 bot 记性好一点可以调到 10，别超过 20"
       },
       "max_context_chars_per_message": {
         "type": "int",
-        "default": 80,
+        "default": 120,
         "description": "历史里单条消息的字数上限",
         "hint": "超出部分截断。群聊里长消息本来就少，120 字足够"
       },
       "max_system_prompt_chars": {
         "type": "int",
-        "default": 1000,
+        "default": 1200,
         "description": "人格提示词字数上限",
         "hint": "人格设定每次请求都要重发一遍。几千字的人格写得再好，也是每条消息都在付钱"
       },

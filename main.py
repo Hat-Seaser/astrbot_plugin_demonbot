@@ -187,6 +187,7 @@ class DemonBotPlugin(Star):
         self.auto_imgtag_file = self.data_dir / "image_tags_auto.json"
         self.persona_file = self.data_dir / "persona.md"
         self.token_usage_file = self.data_dir / "token_usage.json"
+        self.like_usage_file = self.data_dir / "like_usage.json"
 
         self._history: dict = self._load_json(self.history_file, {})
         self._memory: dict = self._load_json(self.memory_file, {})
@@ -201,7 +202,11 @@ class DemonBotPlugin(Star):
             "day": "", "total": 0, "input": 0, "output": 0, "requests": 0,
             "aux_total": 0, "aux_requests": 0, "estimated": 0, "by_source": {}
         })
+        self._like_usage = self._load_json(self.like_usage_file, {
+            "day": "", "user_id": "", "times": 0
+        })
         self._last_poke_at: dict = {}
+        self._friend_request_seen: set = set()
         # 已开启 R18 分区的用户 QQ 号集合（仅私聊 /age>18 可写）
         _r18_raw = self._load_json(self.r18_file, {"users": []})
         self._r18_users: set = {str(x) for x in (_r18_raw.get("users") or [])}
@@ -241,6 +246,7 @@ class DemonBotPlugin(Star):
         self._saver_stats: dict = {"peak_skipped": 0, "aux_blocked": 0, "ctx_trimmed": 0}
         # 分段发送：待补发的尾段，key 为会话，由 after_message_sent 按顺序取走
         self._pending_tail: dict = {}
+        self._pending_bot_segments: dict = {}
         self._tail_sending: set = set()
         # 本轮请求给 LLM 注入过的新词，用于日志排查
         self._style_lock = asyncio.Lock()
@@ -355,6 +361,18 @@ class DemonBotPlugin(Star):
             poke_cfg.setdefault("cooldown_seconds", 20)
             poke_cfg.setdefault("auto_profile", True)
 
+            friend_cfg = self.config.setdefault("friend_request", {})
+            friend_cfg.setdefault("auto_accept", True)
+            friend_cfg.setdefault("log_requests", True)
+
+            stickers_cfg = self.config.setdefault("stickers", {})
+            stickers_cfg.setdefault("enabled", True)
+            stickers_cfg.setdefault("chance", 0.75)
+            stickers_cfg.setdefault("cooldown_seconds", 60)
+            stickers_cfg.setdefault("daily_limit", 80)
+            stickers_cfg.setdefault("always_after_reply", True)
+            stickers_cfg.setdefault("always_on_scold", True)
+
             token_cfg = self.config.setdefault("token_saver", {})
             token_cfg.setdefault("enabled", True)
             token_cfg["max_context_messages"] = min(max(int(token_cfg.get("max_context_messages") or 4), 1), 4)
@@ -416,8 +434,8 @@ class DemonBotPlugin(Star):
                 imgs.setdefault("pixiv_host", "https://www.pixiv.net")
                 imgs.setdefault("users_gate", [10000, 5000, 1000])
                 imgs.setdefault("month_only", True)
-                imgs.setdefault("search_pages", 3)
-                imgs.setdefault("min_bookmarks", 300)
+                imgs.setdefault("search_pages", 2)
+                imgs.setdefault("min_bookmarks", 0)
                 imgs.setdefault("send_all_pages", True)
                 imgs.setdefault("forward_multi_page", True)
                 imgs.setdefault("max_pages_per_illust", 20)
@@ -484,8 +502,8 @@ class DemonBotPlugin(Star):
             imgs.setdefault("pixiv_host", "https://www.pixiv.net")
             imgs.setdefault("users_gate", [10000, 5000, 1000])
             imgs.setdefault("month_only", True)
-            imgs.setdefault("search_pages", 3)
-            imgs.setdefault("min_bookmarks", 300)
+            imgs.setdefault("search_pages", 2)
+            imgs.setdefault("min_bookmarks", 0)
             imgs.setdefault("send_all_pages", True)
             imgs.setdefault("forward_multi_page", True)
             imgs.setdefault("max_pages_per_illust", 20)
@@ -579,154 +597,110 @@ class DemonBotPlugin(Star):
             logger.warning(f"[恶魔bot] 保存人格档案失败：{e}")
 
     def _persona_fragment(self, text: str = "") -> str:
-        """把 persona.md 当作唯一的全局长期自我事实源。
+        """把长期人格档案以“相关优先”的方式注入当前请求。
 
-        设计原则：
-        1. 不按群/私聊隔离，所有会话共享同一份 persona.md。
-        2. 普通聊天只注入短身份卡。
-        3. 询问年龄/生日/身高/三围等事实时，按字段精确抽取，避免
-           因人格文件过长、排序混乱或 system prompt 截断而答错。
-        4. 同义问法统一映射到同一事实键。
+        关键点：
+        1. persona.md 是全局文件，不区分群聊/私聊。
+        2. 普通聊天只注入一张很短的“身份卡”，减少 token。
+        3. 如果用户问到生日/身高/MBTI/主人等人格字段，则优先抽取对应行，
+           保证刚刚通过 /记住信息 写入的内容能被下一条消息立即看到。
         """
         if not self._cfg("persona", "inject", default=True):
             return ""
+
         raw = (self._persona or "").strip()
         if not raw:
             return ""
 
-        cap = int(self._cfg("persona", "max_inject_chars", default=900) or 900)
-        cap = max(320, min(cap, 1100))
-        q = (text or "").strip().lower()
+        cap = int(self._cfg("persona", "max_inject_chars", default=700) or 700)
+        cap = max(250, min(cap, 900))
+        text_l = (text or "").lower()
 
-        # 把人格档案里的“事实行”归一化，兼容 Markdown / 旧模板 / 新模板。
-        facts = []
-        for raw_line in raw.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            line = re.sub(r"^[#>*+\-•\s]+", "", line).strip()
-            if not line:
-                continue
-            facts.append(line)
+        # 常见的“自我查询”触发词；命中时允许注入更多档案字段。
+        detail_words = (
+            "生日", "几岁", "年龄", "身高", "体重", "三围", "鞋码", "血型",
+            "星座", "mbti", "性别", "住哪", "城市", "职业", "名字", "叫什么",
+            "是谁", "你是谁", "你叫什么", "你的设定", "人格", "自我介绍",
+            "主人", "生日是哪天", "哪天生日"
+        )
+        detailed = any(w in text_l for w in detail_words)
 
-        # 查询词 -> 人格字段关键词。
-        field_aliases = {
-            "name": ("名字", "姓名", "你叫什么"),
-            "age": ("年龄", "几岁", "多大"),
-            "birthday": ("生日", "哪天生日", "出生日期"),
-            "height": ("身高", "多高"),
-            "weight": ("体重", "多重"),
-            "measurements": ("三围", "胸围", "腰围", "臀围"),
-            "shoe": ("鞋码", "穿多大鞋"),
-            "blood": ("血型",),
-            "mbti": ("mbti",),
-            "gender": ("性别",),
-            "city": ("住哪", "住在哪里", "城市", "洛阳"),
-            "major": ("专业", "学什么", "研究生", "研一"),
-            "job": ("职业", "做什么工作", "工作"),
-            "wechat": ("微信", "微信号"),
-            "owner": ("主人", "谁是你的主人"),
-            "appearance": ("发色", "发型", "眼睛", "肤色", "穿搭", "外貌"),
-            "likes": ("喜欢", "爱吃", "兴趣", "爱好"),
-        }
-
-        matched = set()
-        for key, aliases in field_aliases.items():
-            if any(a in q for a in aliases):
-                matched.add(key)
-
-        def hit(line: str, words: tuple[str, ...]) -> bool:
-            low = line.lower()
-            return any(w.lower() in low for w in words)
-
-        field_words = {
-            "name": ("名字：", "名字:", "姓名：", "姓名:"),
-            "age": ("年龄：", "年龄:", "设定年龄：", "设定年龄:"),
-            "birthday": ("生日：", "生日:"),
-            "height": ("身高：", "身高:"),
-            "weight": ("体重：", "体重:"),
-            "measurements": ("三围：", "三围:", "胸围", "腰围", "臀围"),
-            "shoe": ("鞋码：", "鞋码:"),
-            "blood": ("血型：", "血型:"),
-            "mbti": ("MBTI：", "MBTI:"),
-            "gender": ("性别：", "性别:", "性别设定"),
-            "city": ("居住城市：", "居住城市:", "城市：", "城市:"),
-            "major": ("专业：", "专业:", "学业：", "研究生"),
-            "job": ("职业：", "职业:", "工作：", "工作:"),
-            "wechat": ("微信号：", "微信号:", "微信：", "微信:"),
-            "owner": ("主人：", "主人:", "主人 QQ", "主人QQ"),
-            "appearance": ("身高：", "体重：", "发色：", "发型：", "眼睛：", "肤色：", "穿搭："),
-            "likes": ("喜欢：", "兴趣：", "爱好："),
-        }
-
-        # 始终保留最关键的身份锚点，避免“问年龄却答成群友年龄”。
-        core = []
-        for k in ("name", "gender", "age", "birthday", "owner"):
-            for line in facts:
-                if hit(line, field_words[k]):
-                    core.append(line)
-                    break
-
+        lines = [x.strip() for x in raw.splitlines() if x.strip()]
+        # 优先保留最近新增的主人补充内容；然后寻找与当前问题相关的字段。
+        supplement = []
         relevant = []
-        if matched:
-            for key in matched:
-                words = field_words[key]
-                for line in facts:
-                    if hit(line, words):
-                        relevant.append(line)
-            # “你是谁/介绍一下自己”需要身份 + 学业/职业 + 城市，但仍然保持短。
-            if any(w in q for w in ("你是谁", "你叫什么", "自我介绍", "你的设定", "人格")):
-                for key in ("major", "job", "city", "appearance", "mbti", "blood"):
-                    for line in facts:
-                        if hit(line, field_words[key]):
-                            relevant.append(line)
+        identity = []
 
-        # 普通聊天只给短身份卡，不塞整份人格。
-        if not matched:
-            identity_keys = ("name", "age", "birthday", "major", "job", "city")
-            for key in identity_keys:
-                for line in facts:
-                    if hit(line, field_words[key]):
-                        relevant.append(line)
+        for line in lines:
+            norm = line.lstrip("-*• ").strip()
+            low = norm.lower()
+            if "主人补充的长期信息" in low:
+                continue
+            if "主人补充" in low:
+                continue
+
+            if any(k in low for k in ("名字：", "名字:", "角色：", "角色:", "主人：", "主人:",
+                                      "主人 qq", "主人qq", "设定年龄", "生日：", "生日:",
+                                      "性别设定", "职业设定")):
+                identity.append(norm)
+
+            if any(k.lower() in low for k in detail_words):
+                relevant.append(norm)
+
+        # 只抽取最近一段“主人补充”内容，避免旧聊天日志/大段人格正文挤占输入。
+        for i, line in enumerate(lines):
+            if "主人补充的长期信息" in line:
+                for x in lines[i + 1:]:
+                    if x.startswith("## ") and x != line:
                         break
-            if not relevant:
-                relevant = facts[:6]
+                    if x.startswith("-"):
+                        supplement.append(x.lstrip("- ").strip())
+
+        # 去重并保持顺序。
+        def uniq(seq):
+            out = []
+            seen = set()
+            for x in seq:
+                if x and x not in seen:
+                    seen.add(x)
+                    out.append(x)
+            return out
+
+        identity = uniq(identity)
+        relevant = uniq(relevant)
+        supplement = uniq(supplement)
 
         selected = []
-        seen = set()
-        for line in core + relevant:
-            if line not in seen:
-                seen.add(line)
-                selected.append(line)
+        if detailed:
+            selected.extend(relevant)
+            selected.extend(identity)
+            selected.extend(supplement[-8:])
+        else:
+            # 普通聊天只给最少量的身份连续性信息。
+            selected.extend(identity[:6])
+            selected.extend(supplement[-3:])
 
-        # 若详细问题仍没有命中对应字段，再给一小段“长期自我备注”，但不把整份文件塞进去。
-        if matched and len(selected) < 2:
-            for line in facts:
-                if "长期自我信息" in line:
-                    continue
-                if len(line) <= 80 and line not in seen:
-                    selected.append(line)
-                    seen.add(line)
-                if len(selected) >= 4:
-                    break
+        # 如果字段提取为空，至少让模型知道自己叫焦糖。
+        if not selected:
+            selected = ["名字：焦糖", "角色：主人的私人小助手"]
+
+        selected = uniq(selected)
 
         out = []
-        used = 0
+        n = 0
         for line in selected:
             piece = f"- {line}"
-            if used + len(piece) + 1 > cap:
+            if n + len(piece) + 1 > cap:
                 break
             out.append(piece)
-            used += len(piece) + 1
+            n += len(piece) + 1
 
         if not out:
             return ""
-        mode = "相关事实" if matched else "长期身份卡"
-        return (
-            f"\n\n[焦糖{mode}]\n"
-            + "\n".join(out)
-            + "\n[这些是焦糖自己的长期事实；与当前群聊历史分开，回答自我信息时优先采用。]"
-        )
+
+        mode = "相关人格档案" if detailed else "长期身份卡"
+        return f"\n\n[焦糖{mode}]\n" + "\n".join(out) + \
+            "\n[上述内容是焦糖自己的长期资料；与普通聊天历史无关，优先相信它。]"
 
     def _is_sleep_window(self) -> bool:
         if not self._cfg("sleep_mode", "enabled", default=True):
@@ -1568,6 +1542,47 @@ class DemonBotPlugin(Star):
         if len(bucket) % self._cfg("chat_history", "save_every_n", default=5) == 0:
             self._save_json(self.history_file, self._history)
 
+    def _record_bot_message(self, group_id: str, text: str):
+        """把 Bot 实际发出的每一段写入插件自己的聊天历史。"""
+        if not text or not text.strip():
+            return
+        self.record_message(group_id, "焦糖", text.strip())
+
+    def _like_today_state(self):
+        day = time.strftime("%Y-%m-%d", time.localtime())
+        d = self._like_usage if isinstance(self._like_usage, dict) else {}
+        if d.get("day") != day:
+            self._like_usage = {"day": day, "user_id": "", "times": 0}
+            self._save_json(self.like_usage_file, self._like_usage)
+        return self._like_usage
+
+    async def _cmd_like_owner(self, event: AstrMessageEvent) -> str:
+        """主人私聊 /点赞：调用 OneBot send_like，一次最多 10 赞/好友/天。"""
+        if event.get_group_id():
+            return "这个要私聊我发啦"
+        if not self._event_is_owner(event):
+            return "这个是主人的专属按钮"
+        state = self._like_today_state()
+        if int(state.get("times", 0)) >= 10:
+            return "今天已经给你点满 10 个赞啦，明天再来"
+        sender_id = str(event.get_sender_id())
+        try:
+            await event.bot.api.call_action(
+                "send_like",
+                user_id=int(sender_id),
+                times=10,
+            )
+            self._like_usage = {
+                "day": state.get("day"),
+                "user_id": sender_id,
+                "times": 10,
+            }
+            self._save_json(self.like_usage_file, self._like_usage)
+            return "好啦，今天的 10 个赞给你安排上了 👍"
+        except Exception as e:
+            logger.warning(f"[恶魔bot] /点赞 调用 send_like 失败：{e}")
+            return "刚刚点赞接口没接住，今天这 10 个赞还没成功发出去"
+
     def query_history(self, group_id: str, keyword: str = "", limit: int = 10):
         bucket = self._history.get(group_id, [])
         if keyword:
@@ -1647,6 +1662,62 @@ class DemonBotPlugin(Star):
 
     # ==================== 核心：群消息拦截 ====================
 
+    # ==================== 好友申请 ====================
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1100)
+    async def on_friend_request(self, event: AstrMessageEvent):
+        """自动同意 OneBot v11 好友申请，只处理好友申请，不处理加群申请。"""
+        if not self._cfg("friend_request", "auto_accept", default=True):
+            return
+
+        msg = getattr(event, "message_obj", None)
+        if msg is None:
+            return
+
+        def field(name, default=None):
+            value = getattr(msg, name, None)
+            if value is not None:
+                return value
+            if isinstance(msg, dict):
+                return msg.get(name, default)
+            raw = getattr(msg, "raw_message", None)
+            if isinstance(raw, dict):
+                return raw.get(name, default)
+            return default
+
+        post_type = str(field("post_type", "") or "").lower()
+        request_type = str(field("request_type", "") or "").lower()
+        flag = field("flag")
+        user_id = field("user_id")
+        comment = str(field("comment", "") or "").strip()
+
+        # OneBot v11 好友申请：post_type=request + request_type=friend。
+        if post_type != "request" or request_type != "friend" or not flag or not user_id:
+            return
+
+        flag = str(flag)
+        if flag in self._friend_request_seen:
+            return
+        self._friend_request_seen.add(flag)
+        if len(self._friend_request_seen) > 500:
+            self._friend_request_seen = set(list(self._friend_request_seen)[-250:])
+
+        try:
+            await event.bot.api.call_action(
+                "set_friend_add_request",
+                flag=flag,
+                approve=True,
+                remark="焦糖",
+            )
+            if self._cfg("friend_request", "log_requests", default=True):
+                logger.info(
+                    f"[恶魔bot] 自动同意好友申请：QQ={user_id}，验证信息={comment[:80] if comment else '（无）'}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[恶魔bot] 自动同意好友申请失败：QQ={user_id}，{type(e).__name__}: {e}"
+            )
+
     # ==================== 戳一戳 ====================
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
@@ -1686,7 +1757,7 @@ class DemonBotPlugin(Star):
         # 固定深夜休眠：轻量指令可用，普通聊天/@/学习全部停止。
         if self._is_sleep_window():
             cmd0, _, _ = self._parse_command(event)
-            wake_cmds={"帮助","状态","自检","版本","撤回"}
+            wake_cmds={"帮助","状态","自检","版本","token","撤回"}
             if cmd0 not in wake_cmds:
                 event.stop_event(); return
 
@@ -2580,6 +2651,7 @@ class DemonBotPlugin(Star):
         # 而是登记下来，等 after_message_sent 确认第一段真的发出去之后再按顺序补发
         tail = [s for s in segments[1:] if s.strip()]
         key = event.unified_msg_origin
+        self._pending_bot_segments[key] = list(segments)
         if tail:
             self._pending_tail[key] = tail
         else:
@@ -2616,28 +2688,51 @@ class DemonBotPlugin(Star):
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent):
-        """第一段确认发出去之后，才按顺序补发剩下的段落，彻底消灭乱序。"""
+        """第一段确认发出后，补发尾段，并把每一段都记录到插件历史/日志。"""
         key = event.unified_msg_origin
         tail = self._pending_tail.pop(key, None)
+        all_segments = self._pending_bot_segments.pop(key, None)
         sticker = self._pending_sticker.pop(key, None)
         if key in self._tail_sending:
             return
         if not tail and not sticker:
+            # 即使只有一段，也把这一段记录下来
+            if all_segments:
+                gid = event.get_group_id() or "unknown"
+                self._record_bot_message(gid, all_segments[0])
+                logger.info(f"[恶魔bot] 分段发送[1/1]：{all_segments[0][:120]}")
             return
+
         group_id = event.get_group_id() or "unknown"
         self._tail_sending.add(key)
         try:
             interval_min = self._cfg("segment_reply", "interval_min", default=1.2)
             interval_max = self._cfg("segment_reply", "interval_max", default=2.5)
+
+            # 第一段由 AstrBot 已经确认发送成功
+            if all_segments:
+                self._record_bot_message(group_id, all_segments[0])
+                logger.info(
+                    f"[恶魔bot] 分段发送[1/{len(all_segments)}]：{all_segments[0][:120]}"
+                )
+
+            total = len(all_segments) if all_segments else (1 + len(tail or []))
+            sent_index = 1
             for seg in tail or []:
                 await asyncio.sleep(random.uniform(interval_min, interval_max))
                 if not await self._safe_send(event, seg, group_id):
+                    logger.warning(f"[恶魔bot] 分段发送失败[{sent_index+1}/{total}]：{seg[:120]}")
                     break
+                sent_index += 1
+                self._record_bot_message(group_id, seg)
+                logger.info(f"[恶魔bot] 分段发送[{sent_index}/{total}]：{seg[:120]}")
+
             if sticker:
                 emotion, force = sticker
-                # 表情永远跟在话后面，隔一小会儿发，像是「打完字又想起来补个表情」
                 await asyncio.sleep(random.uniform(0.6, 1.6))
-                await self._send_sticker(event, group_id, emotion, force=force)
+                ok = await self._send_sticker(event, group_id, emotion, force=force)
+                if ok:
+                    logger.info(f"[恶魔bot] 表情发送：{emotion}")
         finally:
             self._tail_sending.discard(key)
 
@@ -2654,8 +2749,10 @@ class DemonBotPlugin(Star):
         ("状态",     ["恶魔状态"],            "",            "运行状态总览",                     "基础", False),
         ("自检",     ["诊断"],                "",            "逐项体检，插件出问题先发这个",       "基础", False),
         ("版本",     ["ver"],                 "",            "看插件版本和已加载的模块",          "基础", False),
+        ("token",    ["用量", "tokens"],      "",            "看今天消耗的 token",               "基础", False),
         ("发送日志", ["日志", "运行日志"],     "500/全部",     "私聊把运行日志发给你（仅管理员，仅私聊）", "基础", True),
         ("撤回",     ["删除刚才"],            "",            "引用 bot 消息并发送 /撤回 自动撤回", "其他", False),
+        ("点赞",     ["赞我"],                 "",            "私聊主人后给主人每日点赞 10 次",      "其他", False),
 
         ("梗",       ["查梗"],                "676767",      "联网查一个梗，查完入库",            "词库", False),
         ("教梗",     [],                      "词=解释",      "手动录入，优先级高于联网结果",       "词库", False),
@@ -2726,7 +2823,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.9.0"
+    PLUGIN_VERSION = "v2.9.1"
 
     def _command_names(self) -> list:
         names = []
@@ -2804,6 +2901,10 @@ class DemonBotPlugin(Star):
             return self._cmd_status(group_id)
         if name == "自检":
             return await self._cmd_selfcheck(event, group_id)
+        if name == "token":
+            return self._cmd_token_usage()
+        if name == "点赞":
+            return await self._cmd_like_owner(event)
         if name == "撤回":
             return await self._recall_replied_message(event)
         if name == "版本":
@@ -4058,9 +4159,7 @@ class DemonBotPlugin(Star):
 
         t = re.sub(r"^[的啊吧呀呢吗嘛了个张点儿~!！?？。，,\s]+", "", t)
         t = re.sub(r"[的啊吧呀呢吗嘛了个张点儿~!！?？。，,\s]+$", "", t)
-        # 允许“西装 女生”“饥荒 温蒂”等多词关键词；保留中间空格给 Pixiv 搜索。
-        t = re.sub(r"\s+", " ", t).strip()
-        keyword = t
+        keyword = (t.split() or [""])[0]
         return is_real, mature_mode, keyword
 
     def _extract_image_tags(self, text: str) -> list:
@@ -4070,23 +4169,11 @@ class DemonBotPlugin(Star):
             return []
         mapping = self._image_keyword_map()
         mapped = mapping.get(keyword)
-        if mapped:
-            tags = mapped[:4]
-        else:
-            # 常见中文视觉词给出少量 Pixiv 候选，随后仍会经过官方标签解析/缓存。
-            hints = {
-                "腿": ["脚", "太もも", "美脚"],
-                "长腿": ["脚", "美脚", "太もも"],
-                "黑丝": ["黒タイツ", "タイツ"],
-                "西装": ["スーツ"],
-                "校服": ["制服"],
-                "猫": ["猫"],
-            }
-            tags = hints.get(keyword, [keyword])
+        tags = mapped[:3] if mapped else [keyword]
         quality = self._cfg("images", "quality_tag", default="")
         if quality and tags:
             tags.append(quality)
-        return [x for x in tags if x][:6]
+        return [x for x in tags if x][:4]
 
     async def _resolve_image_tags(self, word: str) -> list:
         """自动发现 Pixiv 实际标签；手工 /记住标签 永远优先。"""
@@ -4115,7 +4202,6 @@ class DemonBotPlugin(Star):
             self._auto_img_tags[word] = list(tags[:6])
             self._save_json(self.auto_imgtag_file, self._auto_img_tags)
             return list(tags[:6])
-        # 没有 Pixiv 自动发现结果时，退回本地常用词候选，而不是直接拿中文硬搜。
         return self._extract_image_tags(word)
 
     def _user_r18_unlocked(self, user_id: str) -> bool:

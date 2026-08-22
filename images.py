@@ -582,10 +582,10 @@ async def pixiv_direct(
     rank_pages: int = 2,
     rank_tag_pages: int = 22,
     rank_cache_seconds: float = 21600,
-    min_bookmarks: int = 300,
+    min_bookmarks: int = 0,
     users_gate: list = None,
     month_only: bool = True,
-    search_pages: int = 3,
+    search_pages: int = 2,
     logger=None,
 ) -> list:
     """
@@ -683,18 +683,13 @@ async def pixiv_direct(
                 break
 
     if min_bookmarks and pool:
-        strong = [x for x in pool if (x.get("bookmarks") or 0) >= min_bookmarks]
-        # 排行榜结果一定有热度字段；官方搜索偶尔缺字段时不把所有作品直接放行。
-        pool = strong or [x for x in pool if int(x.get("_tag_match_score") or 0) >= 1]
-    # 质量优先：标签命中 > 收藏量 > 榜单名次 > 分辨率。
-    def _score(item):
-        match = int(item.get("_tag_match_score") or 0)
-        bookmarks = int(item.get("bookmarks") or 0)
-        rank = int(item.get("rank") or 99999)
-        pixels = int(item.get("width") or 0) * int(item.get("height") or 0)
-        return (match, bookmarks, -rank, pixels)
-    pool = sorted(pool, key=_score, reverse=True)
-    return _dedupe(pool)
+        strong = [x for x in pool if (x.get("bookmarks") or 0) >= min_bookmarks or not x.get("bookmarks")]
+        pool = strong or pool
+    pool = sorted(
+        enumerate(pool),
+        key=lambda iv: (-int(iv[1].get("_tag_match_score") or 0), iv[0]),
+    )
+    return _dedupe([x for _, x in pool])
 
 
 # ---------------------------------------------------------------- 老图源
@@ -1028,20 +1023,8 @@ async def fetch(
     if not candidates:
         return []
 
-    # 普通 Pixiv 插图不再完全随机：先按标签命中/收藏/榜单/分辨率排序，再从高质量前列轻微随机。
-    if any(str(c.get("source","")).startswith("pixiv") for c in candidates):
-        candidates = sorted(candidates, key=lambda c: (
-            int(c.get("_tag_match_score") or 0),
-            int(c.get("bookmarks") or 0),
-            -int(c.get("rank") or 99999),
-            int(c.get("width") or 0) * int(c.get("height") or 0),
-        ), reverse=True)
-        top = candidates[:min(len(candidates), max(limit * 8, 8))]
-        random.shuffle(top)
-        final = top[:limit]
-    else:
-        random.shuffle(candidates)
-        final = candidates[:limit]
+    random.shuffle(candidates)
+    final = candidates[:limit]
     if quality == "original":
         for pic in final:
             try:
