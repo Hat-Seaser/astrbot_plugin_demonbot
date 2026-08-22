@@ -94,10 +94,15 @@ try:
     from .tools.knowledge_tool import LookupSlangTool, SearchWebTool, TeachSlangTool
     from .tools.member_tool import LookupMemberTool, NoteMemberTool
     from .tools.memory_tool import RecallMemoryTool, RememberTool
-    from .tools.quote_tool import QuoteTool
+    try:
+        from .tools.quote_tool import QuoteTool
+    except Exception:
+        QuoteTool = None
+        _BOOT_ERRORS.append("tools/quote_tool.py 缺失：文案工具降级，不影响核心聊天")
     _TOOLS_IMPORTED = True
 except Exception as _e:  # noqa: BLE001
     _TOOLS_IMPORTED = False
+    QuoteTool = None
     _BOOT_ERRORS.append(f"tools/ 加载失败：{type(_e).__name__}: {_e}")
 
 PLUGIN_DATA_DIRNAME = "demonbot"
@@ -218,6 +223,9 @@ class DemonBotPlugin(Star):
         self._like_usage = self._load_json(self.like_usage_file, {"day": "", "sent": {}})
         self._like_grants = self._load_json(self.like_grants_file, {"users": {}})
         self._last_poke_at: dict = {}
+        self._known_groups: set[str] = set()
+        self._last_owner_message_at: float = 0.0
+        self._last_poetry_push_at: float = 0.0
         self._like_daily_task = None
         self._last_bot = None
         self._friend_request_seen: set = set()
@@ -1920,12 +1928,37 @@ class DemonBotPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_poke(self,event:AstrMessageEvent):
-        # OneBot v11 poke notice 的关键字段是 user_id / target_id。只有 target_id=机器人自己时才响应。
-        # 如果戳的是群里的其他成员，直接 stop_event，避免后续群消息流程误把它当普通消息。
+        # 这个处理器挂在 ALL 上时，绝对不能拦截普通消息。
+        # 只有确认这是 notice/poke 且 target_id=机器人自己，才消费事件。
+        raw_candidates = [
+            getattr(event, "raw_event", None),
+            getattr(getattr(event, "message_obj", None), "raw_message", None),
+            getattr(event, "message_obj", None),
+        ]
+        is_poke = False
+        for obj in raw_candidates:
+            if isinstance(obj, dict):
+                post_type = str(obj.get("post_type", "") or "").lower()
+                notice_type = str(obj.get("notice_type", "") or "").lower()
+                sub_type = str(obj.get("sub_type", "") or "").lower()
+                if notice_type == "notify" and sub_type == "poke":
+                    is_poke = True
+                    break
+                if post_type == "notice" and notice_type == "notify" and obj.get("target_id") is not None:
+                    is_poke = True
+                    break
+                data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+                if str(data.get("notice_type", "") or "").lower() == "notify" and str(data.get("sub_type", "") or "").lower() == "poke":
+                    is_poke = True
+                    break
+        if not is_poke:
+            # 不是戳一戳：严禁 stop_event，否则会吞掉所有普通聊天。
+            return
+
         target_id = self._poke_target_id(event)
         self_id = self._poke_self_id(event)
-        # 没有 target_id 时宁可不回，也不猜；这比误把戳别人当戳 Bot 更安全。
         if not target_id or (self_id and target_id != self_id):
+            # 是 poke，但戳的不是 Bot：只消费这条 poke 通知。
             event.stop_event()
             return
         if not self._cfg("poke","enabled",default=True) or self._is_sleep_window():
