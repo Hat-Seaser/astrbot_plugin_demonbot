@@ -1,0 +1,1300 @@
+{
+  "reply_style": {
+    "description": "回复风格硬控（治「AI味」和「一次说一大堆」的主力开关）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启回复清洗",
+        "hint": "自动去掉 markdown 符号、去掉「昵称: 08-17 11:14:20」这种把聊天记录格式念出来的前缀、去掉客服式收尾",
+        "type": "bool",
+        "default": true
+      },
+      "inject_constraints": {
+        "description": "向每次 LLM 请求注入输出格式硬约束",
+        "hint": "包含「只说一句话」「不准报自己在干什么」「不准写名字和时间」等，DeepSeek 这类模型对显式禁令最敏感",
+        "type": "bool",
+        "default": true
+      },
+      "single_sentence": {
+        "description": "只保留第一句话",
+        "hint": "模型多写的部分直接砍掉。想让它偶尔多说两句就关掉",
+        "type": "bool",
+        "default": true
+      },
+      "max_chars": {
+        "description": "单条回复最多多少字",
+        "hint": "单条回复的字数硬上限，超出部分本地截断。26 字约等于一句短口语",
+        "type": "int",
+        "default": 26
+      },
+      "min_chars": {
+        "description": "第一句短于多少字时允许再带一句",
+        "hint": "防止只回一个「吱」导致答得莫名其妙",
+        "type": "int",
+        "default": 22
+      },
+      "self_names": {
+        "description": "bot 自己用过的昵称",
+        "hint": "填了之后能更彻底地剥掉「昵称:」这种自称前缀，比如填 焦糖",
+        "type": "list",
+        "default": []
+      },
+      "think_delay_enabled": {
+        "description": "回复前加思考/打字延迟",
+        "hint": "秒回最像机器人。开启后按字数延迟几秒再发",
+        "type": "bool",
+        "default": true
+      },
+      "think_delay_base_seconds": {
+        "description": "基础延迟（秒）",
+        "type": "float",
+        "default": 0.8
+      },
+      "think_delay_per_char": {
+        "description": "每个字增加的延迟（秒）",
+        "type": "float",
+        "default": 0.06
+      },
+      "think_delay_max_seconds": {
+        "description": "延迟上限（秒）",
+        "type": "float",
+        "default": 22.0
+      },
+      "strip_action_text": {
+        "type": "bool",
+        "default": true,
+        "description": "删掉括号里的动作描写",
+        "hint": "专治「（迷迷糊糊翻了个身）」这种旁白，真人打字不会这样"
+      },
+      "strip_self_report": {
+        "type": "bool",
+        "default": true,
+        "description": "删掉主动播报行踪的话",
+        "hint": "没人问就说「我还在补觉呢」的毛病，本地直接删掉。对方真问了在干嘛时不会删"
+      }
+    }
+  },
+  "knowledge": {
+    "description": "联网学梗 / 热点感知（bot 自己上网补知识库）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启联网查梗",
+        "hint": "群里出现没见过的新词（676767、xswl 这类）时自动上网查，查完存进本地词库，并把结论注入这次回复",
+        "type": "bool",
+        "default": true
+      },
+      "backends": {
+        "description": "搜索后端及尝试顺序",
+        "hint": "可用值：bing_rss、bing_rss_intl、baidu_baike_api、moegirl、baidu_baike、jikipedia、duckduckgo、bocha、tavily。前一个没结果才试下一个。先发 /联网测试 看哪些能通，再把能通的排到最前面",
+        "type": "list",
+        "default": [
+          "bing_rss",
+          "baidu_baike_api",
+          "moegirl",
+          "jikipedia",
+          "bing_rss_intl",
+          "baidu_baike",
+          "duckduckgo"
+        ]
+      },
+      "bocha_api_key": {
+        "description": "博查搜索 API Key（可选）",
+        "hint": "bochaai.com 申请，国内可直连、成功率最高。填了以后记得把 bocha 加进 backends",
+        "type": "string",
+        "default": ""
+      },
+      "tavily_api_key": {
+        "description": "Tavily API Key（可选）",
+        "hint": "海外搜索 API，需要梯子",
+        "type": "string",
+        "default": ""
+      },
+      "results_per_query": {
+        "description": "每次搜索取几条结果",
+        "type": "int",
+        "default": 22
+      },
+      "http_timeout_seconds": {
+        "description": "单次网络请求超时（秒）",
+        "hint": "手机网络差就调大，但别超过 15，否则回复会明显变慢",
+        "type": "int",
+        "default": 8
+      },
+      "summarize_timeout_seconds": {
+        "description": "让 LLM 把搜索结果压成一句释义的超时（秒）",
+        "type": "int",
+        "default": 20
+      },
+      "max_lookups_per_message": {
+        "description": "一条消息最多查几个新词",
+        "type": "int",
+        "default": 2
+      },
+      "total_lookup_timeout_seconds": {
+        "description": "查词总超时（秒），超了就放弃注入直接回复",
+        "hint": "这是保证「不会因为联网卡住不回话」的关键闸门",
+        "type": "int",
+        "default": 12
+      },
+      "slang_query_template": {
+        "description": "查梗时用的搜索词模板",
+        "hint": "{term} 会被替换成那个词",
+        "type": "string",
+        "default": "{term} 是什么意思 网络用语 梗"
+      },
+      "refresh_days": {
+        "description": "词库条目多少天后重新联网核对",
+        "type": "int",
+        "default": 60
+      },
+      "max_slang_entries": {
+        "description": "词库最多存多少条",
+        "type": "int",
+        "default": 800
+      },
+      "hot_topics_enabled": {
+        "description": "抓取热搜",
+        "hint": "让 bot 知道最近大家在聊什么新闻/新梗",
+        "type": "bool",
+        "default": true
+      },
+      "hot_refresh_hours": {
+        "description": "热搜刷新间隔（小时）",
+        "type": "int",
+        "default": 6
+      },
+      "hot_topics_count": {
+        "description": "每次抓多少条热搜",
+        "type": "int",
+        "default": 8
+      },
+      "inject_hot_topics": {
+        "description": "把热搜注入 prompt",
+        "hint": "热搜每条消息都要塞进提示词，很费 token，默认关",
+        "type": "bool",
+        "default": false
+      },
+      "hot_inject_count": {
+        "description": "注入几条热搜",
+        "type": "int",
+        "default": 3
+      },
+      "miss_retry_hours": {
+        "description": "查不到的词过多少小时再试一次",
+        "hint": "避免一次网络抖动就把这个词永久标记成「查不到」",
+        "type": "int",
+        "default": 12
+      }
+    }
+  },
+  "members": {
+    "description": "群友编号档案库（让 bot 分得清谁是谁）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启群友登记",
+        "hint": "每个群独立编号 M01、M02…，记昵称/别名/发言量/备注，存在 data/plugin_data/demonbot/members.json",
+        "type": "bool",
+        "default": true
+      },
+      "inject_roster": {
+        "description": "把群友名单注入 prompt",
+        "type": "bool",
+        "default": true
+      },
+      "roster_limit": {
+        "description": "注入最近活跃的几个人",
+        "hint": "人多的群别调太大，费 token",
+        "type": "int",
+        "default": 8
+      },
+      "max_alias_per_member": {
+        "description": "每人最多记几个用过的昵称",
+        "type": "int",
+        "default": 5
+      },
+      "max_notes_per_member": {
+        "description": "每人最多记几条备注",
+        "type": "int",
+        "default": 6
+      },
+      "inject_speaker": {
+        "description": "注入「当前是谁在说话」",
+        "hint": "关掉会导致模型分不清谁是谁，问「我是谁」时容易答成管理员。建议一直开着",
+        "type": "bool",
+        "default": true
+      },
+      "inject_recent_context": {
+        "description": "注入最近几句话分别是谁说的",
+        "hint": "用来回答「刚才那个人是谁」这类问题",
+        "type": "bool",
+        "default": true
+      },
+      "recent_context_lines": {
+        "description": "注入几条上下文",
+        "type": "int",
+        "default": 22
+      }
+    }
+  },
+  "style": {
+    "description": "说话风格自学习（定时归纳群里真实的打字习惯）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启风格学习",
+        "hint": "用 LLM 归纳群里（重点是管理员你）的口头禅、句长、标点习惯，存成「风格速记」注入 prompt",
+        "type": "bool",
+        "default": true
+      },
+      "update_interval_hours": {
+        "description": "多久重新学一次（小时）",
+        "hint": "到点后在下一次回复时后台静默更新，不影响回复速度。也可以随时发 /学风格 手动触发",
+        "type": "int",
+        "default": 12
+      },
+      "sample_size": {
+        "description": "每次取多少条发言作样本",
+        "type": "int",
+        "default": 60
+      },
+      "min_chars": {
+        "description": "样本总字数不足多少就跳过本次学习",
+        "type": "int",
+        "default": 120
+      },
+      "timeout_seconds": {
+        "description": "风格归纳的 LLM 超时（秒）",
+        "type": "int",
+        "default": 30
+      }
+    }
+  },
+  "end_talk": {
+    "description": "结束语识别（收到「嗯嗯/好的/哦哦」就闭麦）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启结束语识别",
+        "type": "bool",
+        "default": true
+      },
+      "phrases": {
+        "description": "被视为聊天收尾的词",
+        "hint": "留空则用内置列表（嗯嗯、好的、哦哦、收到、行吧、拜拜…）",
+        "type": "list",
+        "default": []
+      },
+      "max_length": {
+        "description": "只有短于这个长度的消息才算结束语",
+        "hint": "避免「好的我明天把方案发你」被误判成收尾",
+        "type": "int",
+        "default": 5
+      },
+      "quiet_seconds": {
+        "description": "收到结束语后主动插话静默多少秒",
+        "type": "int",
+        "default": 180
+      },
+      "silent_even_if_at": {
+        "description": "被@着说「嗯嗯」也不回",
+        "hint": "关掉的话，被@时仍然会回一句",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "mute": {
+    "description": "闭嘴指令 + QQ平台禁言自愈",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启闭嘴指令",
+        "type": "bool",
+        "default": true
+      },
+      "trigger_keywords": {
+        "description": "触发闭嘴的关键词（需@bot或回复bot）",
+        "type": "list",
+        "default": [
+          "闭嘴",
+          "安静",
+          "shut up"
+        ]
+      },
+      "unmute_keywords": {
+        "description": "解除闭嘴的关键词",
+        "hint": "管理员说这些词时，无论当前是本地闭嘴、平台禁言退避还是结束语静默，一律强制全清",
+        "type": "list",
+        "default": [
+          "说话",
+          "复活",
+          "解除闭嘴",
+          "解禁",
+          "出来"
+        ]
+      },
+      "duration_minutes": {
+        "description": "默认闭嘴时长（分钟）",
+        "type": "int",
+        "default": 10
+      },
+      "anyone_can_unmute": {
+        "description": "任何人都能解除闭嘴",
+        "hint": "关掉的话只有管理员或当初让它闭嘴的人能解",
+        "type": "bool",
+        "default": true
+      },
+      "platform_mute_backoff_minutes": {
+        "description": "被QQ平台禁言后退避多少分钟",
+        "hint": "检测到 retcode 1200「当前处于被禁言状态」时启用，期间不再请求 LLM 也不再尝试发送，省 token 也避免日志刷屏。管理员发 /解禁 可立即清除",
+        "type": "int",
+        "default": 30
+      }
+    }
+  },
+  "segment_reply": {
+    "description": "长回复分段发送（默认关闭，因为它正是「多条+乱序」的来源）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启分段发送",
+        "hint": "默认关。要打字感建议优先用 reply_style.think_delay。开启后顺序由 after_message_sent 钩子保证，不会再乱序",
+        "type": "bool",
+        "default": false
+      },
+      "trigger_min_length": {
+        "description": "短于多少字不分段",
+        "type": "int",
+        "default": 30
+      },
+      "max_segments": {
+        "description": "最多分几段（超出的直接丢弃）",
+        "type": "int",
+        "default": 2
+      },
+      "interval_min": {
+        "description": "段间最短间隔（秒）",
+        "type": "float",
+        "default": 1.2
+      },
+      "interval_max": {
+        "description": "段间最长间隔（秒）",
+        "type": "float",
+        "default": 2.5
+      }
+    }
+  },
+  "peak_hours": {
+    "type": "object",
+    "description": "高峰时段省钱（接口在这些时段双倍计费，所以让 bot 闭麦）",
+    "hint": "北京时间 9:00-12:00、14:00-18:00 是官方公布的双倍计费时段。开启后这两段时间里 bot 不主动插话、不做任何后台请求；被 @ 时仍会回，但有冷却。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用高峰时段省钱",
+        "hint": "关掉之后 bot 全天都正常说话，账单也会明显变高"
+      },
+      "windows": {
+        "type": "list",
+        "default": [
+          "09:00-12:00",
+          "14:00-18:00"
+        ],
+        "description": "高峰时段窗口（北京时间）",
+        "hint": "每行一条，写成 09:00-12:00 这种格式，可以自己加或改"
+      },
+      "utc_offset_hours": {
+        "type": "int",
+        "default": 8,
+        "description": "时区偏移（北京时间是 8）",
+        "hint": "用 UTC 换算，服务器时区设错了也不影响判断"
+      },
+      "at_reply_cooldown_seconds": {
+        "type": "int",
+        "default": 90,
+        "description": "高峰期被 @ 后的回复冷却（秒）",
+        "hint": "防止高峰期有人连环 @ 把额度刷光。管理员不受此限"
+      },
+      "block_background_llm": {
+        "type": "bool",
+        "default": true,
+        "description": "高峰期暂停后台请求",
+        "hint": "学说话风格、联网查梗、插话判断这些用户看不见的请求，高峰期一律推迟到空闲时段"
+      },
+      "image_cooldown_multiplier": {
+        "type": "float",
+        "default": 2.0,
+        "description": "高峰期发图冷却倍数",
+        "hint": "高峰期普通用户要图的冷却时间乘以这个倍数"
+      }
+    }
+  },
+  "token_saver": {
+    "type": "object",
+    "description": "省 token（账单里最大的一块就在这里）",
+    "hint": "每次请求都会把整段历史对话重新上传一遍。聊到第 100 条时你发一句「在吗」，实际上传的是那 100 条的全文。这里限制每次带多少历史，是降本最有效的一项。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用上下文裁剪",
+        "hint": "关掉后 bot 记性更好，但每条消息的花费会成倍上涨"
+      },
+      "max_context_messages": {
+        "type": "int",
+        "default": 6,
+        "description": "每次带给模型的历史条数",
+        "hint": "6 条约等于最近 3 轮对话。想让 bot 记性好一点可以调到 10，别超过 20"
+      },
+      "max_context_chars_per_message": {
+        "type": "int",
+        "default": 120,
+        "description": "历史里单条消息的字数上限",
+        "hint": "超出部分截断。群聊里长消息本来就少，120 字足够"
+      },
+      "max_system_prompt_chars": {
+        "type": "int",
+        "default": 1200,
+        "description": "人格提示词字数上限",
+        "hint": "人格设定每次请求都要重发一遍。几千字的人格写得再好，也是每条消息都在付钱"
+      },
+      "smart_inject": {
+        "type": "bool",
+        "default": true,
+        "description": "按需注入群友名单",
+        "hint": "只有消息里出现「谁/他/她/刚才」这类词时才带上群友编号表，其余时候省下这段"
+      },
+      "daily_aux_call_limit": {
+        "type": "int",
+        "default": 60,
+        "description": "后台请求每日上限（0=不限）",
+        "hint": "学风格、查梗、插话判断这类用户看不见的请求，一天最多几次"
+      }
+    }
+  },
+  "reply_gate": {
+    "description": "插话时机判断（要不要开口）",
+    "type": "object",
+    "items": {
+      "speak": {
+        "type": "bool",
+        "default": true,
+        "description": "发言总开关",
+        "hint": "关掉之后除了指令，bot 一个字都不说。对应 /开关 发言"
+      },
+      "enabled": {
+        "description": "开启插话闸门",
+        "type": "bool",
+        "default": true
+      },
+      "reply_to_members": {
+        "type": "bool",
+        "default": true,
+        "description": "是否回复普通群友",
+        "hint": "关掉后 bot 只理管理员。对应 /开关 回复群友"
+      },
+      "reply_to_admin": {
+        "type": "bool",
+        "default": true,
+        "description": "是否回复管理员",
+        "hint": "对应 /开关 回复管理员"
+      },
+      "admin_ids": {
+        "description": "管理员QQ号",
+        "hint": "这些人说话时 bot 更愿意搭话，也拥有强制解禁权限",
+        "type": "list",
+        "default": []
+      },
+      "group_ids": {
+        "description": "允许主动插话的群号白名单",
+        "hint": "留空表示不限制群。只影响主动插话，被@永远会回",
+        "type": "list",
+        "default": []
+      },
+      "mode": {
+        "description": "判断模式：rule（纯规则，不额外花token）或 llm（每条消息多问一次模型）",
+        "type": "string",
+        "default": "rule",
+        "options": [
+          "rule",
+          "llm"
+        ],
+        "hint": "rule=本地规则判断，不花钱；llm=每条消息都额外请求一次模型问「要不要接话」，很费 token，建议保持 rule"
+      },
+      "always_reply_on_at": {
+        "description": "被@或被回复时必定回话",
+        "type": "bool",
+        "default": true
+      },
+      "min_reply_interval_seconds": {
+        "description": "主动插话最小间隔（秒）",
+        "type": "int",
+        "default": 225
+      },
+      "random_reply_chance": {
+        "description": "普通群友发言后的插话概率",
+        "type": "float",
+        "default": 0.05
+      },
+      "admin_random_reply_chance": {
+        "description": "管理员发言后的插话概率",
+        "type": "float",
+        "default": 0.5
+      },
+      "keywords": {
+        "description": "命中就必定插话的关键词",
+        "type": "list",
+        "default": []
+      },
+      "emotion_keywords": {
+        "description": "情绪词（命中后按概率插话）",
+        "type": "list",
+        "default": [
+          "累",
+          "烦",
+          "崩了",
+          "笑死",
+          "无语",
+          "救命",
+          "难受"
+        ]
+      },
+      "emotion_reply_chance": {
+        "description": "命中情绪词后的插话概率",
+        "type": "float",
+        "default": 0.35
+      },
+      "new_topic_silence_seconds": {
+        "description": "群里冷场多少秒后的发言算「新话题」",
+        "type": "int",
+        "default": 300
+      },
+      "new_topic_reply_chance": {
+        "description": "新话题的插话概率",
+        "type": "float",
+        "default": 0.2
+      },
+      "rate_window_seconds": {
+        "description": "统计群语速的窗口（秒）",
+        "type": "int",
+        "default": 60
+      },
+      "busy_messages_per_minute": {
+        "description": "每分钟超过多少条算高频群",
+        "type": "int",
+        "default": 15
+      },
+      "busy_window_seconds": {
+        "description": "高频群硬顶的滑动窗口（秒）",
+        "type": "int",
+        "default": 300
+      },
+      "busy_max_replies": {
+        "description": "高频群该窗口内最多主动插话几次",
+        "hint": "防概率死循环刷屏的最后一道闸",
+        "type": "int",
+        "default": 2
+      },
+      "busy_chance_multiplier": {
+        "description": "高频群的概率衰减系数",
+        "type": "float",
+        "default": 0.3
+      },
+      "gate_provider_id": {
+        "description": "辅助任务专用的模型 provider ID",
+        "hint": "插话判断、查梗归纳、风格学习都会优先用它。建议配一个便宜的小模型，留空则用当前主模型",
+        "type": "string",
+        "default": ""
+      },
+      "llm_context_messages": {
+        "description": "llm 模式判断时带几条上下文",
+        "type": "int",
+        "default": 6
+      },
+      "llm_judge_timeout_seconds": {
+        "description": "llm 模式判断超时（秒）",
+        "type": "int",
+        "default": 12
+      }
+    }
+  },
+  "repeat": {
+    "description": "复读跟风",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启复读跟风",
+        "type": "bool",
+        "default": true
+      },
+      "min_streak": {
+        "description": "连续几条相同才跟",
+        "type": "int",
+        "default": 2
+      },
+      "cooldown_seconds": {
+        "description": "跟复读冷却（秒）",
+        "type": "int",
+        "default": 8
+      },
+      "follow_chance": {
+        "description": "跟复读的概率",
+        "type": "float",
+        "default": 0.7
+      }
+    }
+  },
+  "media_skip": {
+    "description": "图片/视频消息跳过（避免AI瞎编看不见的内容）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "含图片/视频时直接跳过，不请求LLM",
+        "type": "bool",
+        "default": true
+      },
+      "react_enabled": {
+        "description": "跳过时小概率回个QQ表情",
+        "type": "bool",
+        "default": false
+      },
+      "react_chance": {
+        "description": "回表情的概率",
+        "type": "float",
+        "default": 0.15
+      },
+      "react_face_ids": {
+        "description": "可用的QQ表情ID",
+        "type": "list",
+        "default": [
+          178,
+          179,
+          182,
+          76
+        ]
+      }
+    }
+  },
+  "mood": {
+    "description": "心情值系统",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启心情注入",
+        "type": "bool",
+        "default": true
+      },
+      "mention_activity_when_asked": {
+        "description": "只有被问「在干嘛」时才提自己在做什么",
+        "hint": "这条是治「我还在画画」「我在点外卖」这类主动自报状态的关键。关掉会退回旧行为",
+        "type": "bool",
+        "default": true
+      },
+      "drift_weight": {
+        "description": "心情向时段基线靠拢的速度",
+        "type": "float",
+        "default": 0.06
+      },
+      "jitter": {
+        "description": "每次心情的随机抖动幅度",
+        "type": "float",
+        "default": 0.05
+      },
+      "schedule": {
+        "description": "自定义作息时间表（留空用内置的）",
+        "hint": "格式：每项含 start/end/activity/label/baseline",
+        "type": "list",
+        "default": []
+      }
+    }
+  },
+  "chat_history": {
+    "description": "群聊记录",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "记录群聊消息",
+        "type": "bool",
+        "default": true
+      },
+      "max_records_per_group": {
+        "description": "每群保留多少条",
+        "hint": "风格学习要用这些样本，建议不低于 200",
+        "type": "int",
+        "default": 300
+      },
+      "save_every_n": {
+        "description": "每 N 条落盘一次",
+        "hint": "手机上频繁写文件费性能，攒几条再写",
+        "type": "int",
+        "default": 5
+      }
+    }
+  },
+  "memory": {
+    "description": "长期记忆",
+    "type": "object",
+    "items": {
+      "max_memory_per_scope": {
+        "description": "每个作用域最多存多少条记忆",
+        "type": "int",
+        "default": 300
+      }
+    }
+  },
+  "commands": {
+    "description": "指令识别（保证 /指令 永远不会被当成聊天喂给模型）",
+    "type": "object",
+    "items": {
+      "prefixes": {
+        "description": "指令前缀",
+        "hint": "消息以这些开头才算指令。默认 / 和 ==，可自己加",
+        "type": "list",
+        "default": [
+          "/",
+          "=="
+        ]
+      },
+      "strict": {
+        "description": "前缀命中但指令名不认识时，回一句提示并终止",
+        "hint": "开着能保证任何以前缀开头的消息都不会流进聊天流程；关掉则当普通聊天处理",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "images": {
+    "description": "插图获取（Pixiv 排行榜/官方搜索 + 公开图源）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启看图功能",
+        "hint": "@bot 说「看看腿」「来点猫」时直接搜图发图，不请求 LLM。默认全年龄/擦边；含「真」走真人，含「好」走 R18（需私聊 /age>18）",
+        "type": "bool",
+        "default": true
+      },
+      "backends": {
+        "description": "图源及顺序",
+        "hint": "可用：pixiv（官方排行榜/搜索，画质最好）、lolicon、anosu。前一个没结果才试下一个",
+        "type": "list",
+        "default": [
+          "pixiv",
+          "lolicon",
+          "anosu"
+        ]
+      },
+      "proxy_domain": {
+        "description": "Pixiv 图片反代域名",
+        "hint": "官方 i.pximg.net 有防盗链且国内不通。发出来是裂图就换 i.pixiv.cat / pixiv.re / i.pixiv.nl",
+        "type": "string",
+        "default": "i.pixiv.re"
+      },
+      "trigger_words": {
+        "description": "触发看图的词",
+        "hint": "必须同时@bot才生效",
+        "type": "list",
+        "default": [
+          "看看",
+          "来点",
+          "来张",
+          "来个",
+          "整点",
+          "发张",
+          "发个",
+          "搞点",
+          "想看"
+        ]
+      },
+      "keyword_map": {
+        "description": "中文词 -> Pixiv 实际标签",
+        "hint": "格式 中文=日文标签，多个同义标签用 | 分隔。这是画质的关键：Pixiv 标签体系是日文，直接拿中文搜基本搜不到正经作品。也可以在聊天里直接发 /记住标签 校服=制服 现场加，现场加的优先级更高",
+        "type": "list",
+        "default": [
+          "腿=美脚|絶対領域",
+          "丝袜=ニーソックス|黒スト",
+          "白丝=白ニーソ",
+          "黑丝=黒スト",
+          "妹子=女の子|美少女",
+          "男的=男の子",
+          "猫=猫耳|ねこみみ",
+          "猫娘=猫耳",
+          "风景=風景|背景",
+          "天空=空",
+          "海=海",
+          "夜景=夜景",
+          "樱花=桜",
+          "雪=雪景色",
+          "校服=制服|スクール水着",
+          "制服=制服",
+          "JK=JK",
+          "泳装=水着",
+          "和服=着物|和服",
+          "头像=オリジナル",
+          "原创=オリジナル",
+          "情侣=カップル",
+          "治愈=癒し"
+        ]
+      },
+      "prefer_ranking": {
+        "description": "优先走 Pixiv 排行榜",
+        "hint": "开启后先从 Pixiv 官方榜单里取图。榜单是全站按热度排出来的，能进榜的基本都是头部画师，这是「画师水平高」最可靠的来源。对应 /开关 走榜单",
+        "type": "bool",
+        "default": true
+      },
+      "rank_modes": {
+        "description": "排行榜类型及顺序",
+        "hint": "可填 monthly（月榜）、weekly（周榜）、daily（日榜）、rookie（新人榜）、original（原创榜）。带标签时前一个榜里筛不出结果才试下一个",
+        "type": "list",
+        "default": [
+          "monthly",
+          "weekly",
+          "daily"
+        ]
+      },
+      "rank_pages": {
+        "description": "不带标签时取榜单前几页",
+        "hint": "一页 50 名。2 = 本月前 100 张里随机抽（推荐）。对应 /开关 榜单页数",
+        "type": "int",
+        "default": 2
+      },
+      "rank_tag_pages": {
+        "description": "带标签时翻榜单前几页",
+        "hint": "标签越冷门越需要翻得深。4 = 在前 200 名里找带这个标签的作品",
+        "type": "int",
+        "default": 22
+      },
+      "rank_cache_seconds": {
+        "description": "榜单缓存时间（秒）",
+        "hint": "榜单一天才更新一次，没必要每次发图都去打一遍 Pixiv。默认 21600=6 小时",
+        "type": "int",
+        "default": 21600
+      },
+      "pixiv_cookie": {
+        "description": "Pixiv Cookie（可选）",
+        "hint": "填你账号的 PHPSESSID（浏览器 F12→应用→Cookie→pixiv.net→PHPSESSID，形如 12345678_AbCdEf...）。只填值或填完整 Cookie 串都行。不填也能用排行榜，但月榜里凑不到的冷门标签会搜不了。注意：这等于把账号凭证交给插件，只存在你自己的服务器配置里",
+        "type": "string",
+        "default": ""
+      },
+      "pixiv_host": {
+        "description": "Pixiv 站点地址",
+        "hint": "直连不通时可以填你自己的反代域名，格式 https://xxx",
+        "type": "string",
+        "default": "https://www.pixiv.net"
+      },
+      "users_gate": {
+        "description": "收藏量门槛标签",
+        "hint": "Pixiv 会给作品自动打「5000users入り」这类收藏里程碑标签。搜索时会带上它来筛高收藏作品，从高到低依次尝试。免费账号拿不到「按热门排序」，这是替代方案",
+        "type": "list",
+        "default": [
+          10000,
+          5000,
+          1000
+        ]
+      },
+      "month_only": {
+        "description": "搜索只看本月作品",
+        "hint": "开启后官方搜索只在本月投稿里找。冷门标签本月没有时会自动放开时间范围",
+        "type": "bool",
+        "default": true
+      },
+      "search_pages": {
+        "description": "官方搜索翻几页",
+        "hint": "一页 60 条",
+        "type": "int",
+        "default": 2
+      },
+      "min_bookmarks": {
+        "description": "最低收藏数",
+        "hint": "低于这个收藏数的榜单作品会被剔掉。0=不限。榜单本身已经是热度排序，一般不用设",
+        "type": "int",
+        "default": 0
+      },
+      "send_all_pages": {
+        "description": "多 p 作品整套发送",
+        "hint": "一个作品有多张图时全部发出来。关掉则只发第一张。对应 /开关 多p全发",
+        "type": "bool",
+        "default": true
+      },
+      "forward_multi_page": {
+        "description": "多 p 用合并转发发送",
+        "hint": "做成「聊天记录」形式，点开才看得到，不刷屏。平台不支持时自动退回成普通多图。对应 /开关 合并转发",
+        "type": "bool",
+        "default": true
+      },
+      "max_pages_per_illust": {
+        "description": "一套图最多发几张",
+        "hint": "防止碰上 100p 的图包把群刷爆。对应 /开关 多p上限",
+        "type": "int",
+        "default": 20
+      },
+      "cooldown_seconds": {
+        "description": "整个群的发图冷却（秒）",
+        "type": "int",
+        "default": 20,
+        "hint": "防止一群人轮流刷图。和「普通用户发图冷却」取更严的一个"
+      },
+      "timeout_seconds": {
+        "description": "图源请求超时（秒）",
+        "type": "int",
+        "default": 12
+      },
+      "quality_tag": {
+        "description": "附加的质量标签",
+        "hint": "每次搜索都会额外带上这个标签，用来把随手涂鸦挡在外面。留空则不加。常用：オリジナル（原创）",
+        "type": "string",
+        "default": ""
+      },
+      "pool_size": {
+        "description": "每次先取几张候选",
+        "hint": "取一批再按分辨率过滤、去重、随机挑一张，避免老是同一张。调大命中更好但慢一点",
+        "type": "int",
+        "default": 8
+      },
+      "min_width": {
+        "description": "最小宽度（像素）",
+        "hint": "低于这个尺寸的图会被剔掉。全被剔掉时会放行原始结果，不会一张不发",
+        "type": "int",
+        "default": 900
+      },
+      "min_height": {
+        "description": "最小高度（像素）",
+        "type": "int",
+        "default": 900
+      },
+      "exclude_ai": {
+        "description": "排除 AI 生成作品",
+        "type": "bool",
+        "default": true
+      },
+      "quality": {
+        "type": "string",
+        "default": "regular",
+        "options": [
+          "original",
+          "regular",
+          "small",
+          "thumb"
+        ],
+        "description": "插图画质档位",
+        "hint": "original=原图（十几MB，慢且费流量）／regular=高（约1200px，推荐）／small=中／thumb=低。群聊本来就会二次压缩，原图和高清肉眼几乎没差别。对应 /开关 分辨率"
+      },
+      "per_user_cooldown_seconds": {
+        "type": "int",
+        "default": 300,
+        "description": "普通用户发图冷却（秒）",
+        "hint": "每人每隔这么久才能要一张图。默认 300 秒=5 分钟。对应 /开关 图冷却"
+      },
+      "admin_bypass_cooldown": {
+        "type": "bool",
+        "default": true,
+        "description": "管理员不受发图冷却限制",
+        "hint": "关掉后管理员也要排队"
+      },
+      "real_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "允许发真人图",
+        "hint": "对应 /开关 真人图"
+      },
+      "notify_on_cooldown": {
+        "type": "bool",
+        "default": true,
+        "description": "冷却中时告诉对方还要等多久",
+        "hint": "关掉则冷却期内直接装作没看见"
+      },
+      "mature_group_whitelist": {
+        "description": "允许发擦边图的群",
+        "hint": "填群号。默认擦边（非露骨）内容只在私聊放行，把你自己的测试群号填进来就能在群里用。留空=只私聊",
+        "type": "list",
+        "default": []
+      },
+      "notify_on_empty": {
+        "description": "取不到图时吭一声",
+        "hint": "关掉则取图失败时装作没看见",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "owner": {
+    "description": "主人身份（跨群识别）",
+    "type": "object",
+    "items": {
+      "qq": {
+        "description": "主人的 QQ 号",
+        "hint": "可以填多个。填进来的号自动获得管理员权限，并在提示词里被标成「你主人」，不管在哪个群都认得",
+        "type": "list",
+        "default": []
+      },
+      "names": {
+        "description": "主人的昵称/ID 关键词",
+        "hint": "用来在你改了群名片时也认得出来。是「包含匹配」，填「遂意」就能匹配「遂意i」「小遂意」。注意别填太通用的字，否则会认错人",
+        "type": "list",
+        "default": []
+      },
+      "title": {
+        "description": "怎么称呼你",
+        "hint": "注入提示词用，比如 主人／老板／哥。不会每句话都喊",
+        "type": "string",
+        "default": "主人"
+      }
+    }
+  },
+  "life": {
+    "description": "动态生活状态（合并自 dynamic_life_state 并做了改造）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启生活时间线",
+        "hint": "每天生成一份不重样的作息表（工作日/周末两套模板+随机事件），让语气随时段变化。关掉则退回旧的固定时段表",
+        "type": "bool",
+        "default": true
+      },
+      "wake_hour": {
+        "description": "工作日大概几点起",
+        "hint": "实际起床时间会在这个点上下随机浮动半小时",
+        "type": "int",
+        "default": 7
+      },
+      "weekend_wake_hour": {
+        "description": "周末大概几点起",
+        "type": "int",
+        "default": 10
+      },
+      "volunteer_on_change": {
+        "description": "刚换时段时允许主动提一嘴",
+        "hint": "这是「别每次都报告在干嘛」的关键开关。开启后也只在刚进入新时段的 20 分钟内、且这个活动今天还没提过时才会说，其余时候状态只影响语气",
+        "type": "bool",
+        "default": true
+      },
+      "volunteer_chance": {
+        "description": "主动提的概率",
+        "hint": "满足上面条件后还要再掷一次骰子。想让它更闷就调小",
+        "type": "float",
+        "default": 0.35
+      }
+    }
+  },
+  "stickers": {
+    "description": "表情包（本地图包 + 情绪匹配）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启表情包",
+        "hint": "一次只发一张，跟在文字回复后面。情绪判定全在本地做，不花 token",
+        "type": "bool",
+        "default": true
+      },
+      "folder": {
+        "description": "表情包解压/扫描目录",
+        "hint": "留空则用 data/plugin_data/demonbot/stickers/。这里存的是解压后的散图，不用手动管，插件每次重载会自动从 zip 解压进来。改完发 /表情 重载",
+        "type": "string",
+        "default": ""
+      },
+      "zip_path": {
+        "description": "表情包压缩包路径",
+        "hint": "留空则自动找插件目录下的 stickers.zip。git 仓库里放这一个 zip 文件就够了，不用传几百张散图（GitHub 网页端一次最多传100个文件），插件启动/重载时会自动解压到上面那个目录",
+        "type": "string",
+        "default": ""
+      },
+      "chance": {
+        "description": "普通对话发表情的概率",
+        "hint": "0.9 = 十有九次跟表情。挨骂和困了强制发",
+        "type": "float",
+        "default": 0.9
+      },
+      "cooldown_seconds": {
+        "description": "同一个人两张表情的最小间隔（秒）",
+        "type": "int",
+        "default": 180
+      },
+      "daily_limit": {
+        "description": "每个会话每天最多发几张",
+        "type": "int",
+        "default": 220
+      },
+      "always_after_reply": {
+        "description": "几乎每句回复后都跟一张表情",
+        "hint": "开：没命中具体情绪时用中性表情兜底。关：只在识别到情绪时发。挨骂/困了仍可强制发",
+        "type": "bool",
+        "default": true
+      },
+      "always_on_scold": {
+        "description": "挨骂和犯困时必发",
+        "hint": "忽略概率和冷却。你要的「批评它就发被击中/害怕/哭」就靠这个",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "sponsor": {
+    "description": "出错时 @主人 求赞助",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启求赞助提醒",
+        "hint": "检测到 LLM 报错（余额不足、连接失败、全部模型挂了）时，把难看的英文报错换成一句人话并 @主人",
+        "type": "bool",
+        "default": true
+      },
+      "lines": {
+        "description": "求赞助的话术",
+        "hint": "随机挑一条",
+        "type": "list",
+        "default": [
+          "出bug了，给我主人充值点token求求啦",
+          "我又崩了，主人快来充点token吧求求了",
+          "脑子转不动了……主人，充值链接就在你手机里"
+        ]
+      },
+      "sticker_emotion": {
+        "description": "配套的表情情绪",
+        "hint": "可填 出bug／要钱／难过 等，见 /表情 列表",
+        "type": "string",
+        "default": "出bug"
+      },
+      "cooldown_seconds": {
+        "description": "两次求赞助的最小间隔（秒）",
+        "hint": "接口一直挂的时候防止刷屏",
+        "type": "int",
+        "default": 600
+      },
+      "show_reason": {
+        "description": "附带简短的错误原因",
+        "hint": "调试时打开，平时建议关（群友不需要看报错）",
+        "type": "bool",
+        "default": false
+      },
+      "on_image_fail": {
+        "description": "取图失败也求赞助",
+        "hint": "默认关。取图失败多半是网络问题，跟 token 无关",
+        "type": "bool",
+        "default": false
+      },
+      "meal_nudge_enabled": {
+        "description": "饭点被@并问在干嘛时顺带轻轻讨 token",
+        "type": "bool",
+        "default": true
+      },
+      "meal_nudge_chance": {
+        "description": "饭点讨饭话术触发概率",
+        "type": "float",
+        "default": 0.55
+      }
+    }
+  },
+  "quotes": {
+    "description": "文案（情话/伤感/温柔/毒鸡汤）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启文案功能",
+        "type": "bool",
+        "default": true
+      },
+      "timeout_seconds": {
+        "description": "接口超时（秒）",
+        "type": "int",
+        "default": 8
+      },
+      "max_chars": {
+        "description": "单条文案最长字数",
+        "hint": "超了会截断，避免一大段排版糊到群里",
+        "type": "int",
+        "default": 60
+      },
+      "auto_comfort_enabled": {
+        "description": "主人情绪低落时自动发送温柔文案",
+        "type": "bool",
+        "default": true
+      },
+      "auto_comfort_chance": {
+        "description": "检测到主人明显伤感内容后的触发概率",
+        "type": "float",
+        "default": 0.85
+      }
+    }
+  },
+  "vision": {
+    "description": "图片识别（需要视觉模型）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "被@着发图时自动看图接话",
+        "hint": "需要当前会话用的是支持视觉的模型（名字里常带 vl / vision）。纯文本模型会静默跳过，不会报错刷屏",
+        "type": "bool",
+        "default": true
+      },
+      "timeout_seconds": {
+        "description": "识图超时（秒）",
+        "type": "int",
+        "default": 220
+      },
+      "ignore_budget": {
+        "description": "忽略每日后台请求预算",
+        "hint": "默认识图也算进省钱预算里。打开后不管预算都识",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "voice": {
+    "description": "语音发送（TTS）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "允许发语音",
+        "hint": "用的是 AstrBot 自己配的 TTS 服务商，插件不自带发音引擎。没配 TTS 时 /说 会提示你去配",
+        "type": "bool",
+        "default": true
+      },
+      "max_chars": {
+        "description": "最长转多少字",
+        "type": "int",
+        "default": 80
+      },
+      "timeout_seconds": {
+        "description": "合成超时（秒）",
+        "type": "int",
+        "default": 30
+      }
+    }
+  },
+  "sleep": {
+    "description": "深夜休眠（省 token）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用深夜休眠",
+        "hint": "23:59 到次日 07:30 不处理群消息、不调用 LLM、不学习",
+        "type": "bool",
+        "default": true
+      },
+      "start_minute": {
+        "description": "休眠开始分钟",
+        "hint": "1439=23:59",
+        "type": "int",
+        "default": 1439
+      },
+      "end_minute": {
+        "description": "休眠结束分钟",
+        "hint": "450=07:30",
+        "type": "int",
+        "default": 450
+      },
+      "start_text": {
+        "description": "休眠开始显示文字",
+        "type": "string",
+        "default": "23:59"
+      },
+      "end_text": {
+        "description": "休眠结束显示文字",
+        "type": "string",
+        "default": "07:30"
+      }
+    }
+  }
+}

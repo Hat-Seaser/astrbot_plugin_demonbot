@@ -8,11 +8,7 @@
 所以这里不绑死任何一家：每个分类下挂一串候选接口，逐个试，
 第一个能返回像样文本的就用，全挂就返回空（由主程序决定说什么）。
 
-**你的日志里有一条很关键的报错**：
-    Cannot connect to host api.lolimi.cn:443 ssl:default [Name or service not known]
-「Name or service not known」是 DNS 根本解析不出来，不是接口挂了——
-说明你那台 Termux 上的 DNS 拿不到这个域名。所以：
-1. 我没有把 lolimi 作为唯一来源，每个分类都配了别家接口兜底；
+1. 不将 lolimi 作为唯一来源，每个分类都配了别家接口兜底；
 2. 提供 /文案测试，一次性告诉你哪几家在你的网络下真的能通；
 3. 全部接口都挂时，还有一份本地兜底句库（LOCAL_FALLBACK），
    保证「/文案 情话」永远有东西发得出来，不会空手而归。
@@ -164,7 +160,10 @@ async def fetch_one(
     """
     kind = normalize_kind(kind)
     backends = list(BACKENDS.get(kind) or BACKENDS["一言"])
-    random.shuffle(backends)          # 别老薅同一家
+    if kind in ("伤感", "温柔", "一言", "晚安"):
+        preferred = [b for b in backends if b[0].startswith("hitokoto")]
+        others = [b for b in backends if not b[0].startswith("hitokoto")]
+        backends = preferred + others
     for name, url, mode in backends:
         try:
             raw = await _request(url, timeout=timeout)
@@ -177,6 +176,11 @@ async def fetch_one(
             if mode.startswith("json:"):
                 data = json.loads(raw)
                 text = _dig(data, mode.split(":", 1)[1]) or ""
+                if not text and isinstance(data, dict):
+                    for k in ("content", "qinghua", "hitokoto", "data", "msg", "message", "text"):
+                        if isinstance(data.get(k), str) and data.get(k).strip():
+                            text = data[k]
+                            break
             else:
                 text = raw
         except Exception:  # noqa: BLE001

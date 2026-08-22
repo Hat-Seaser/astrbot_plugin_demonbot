@@ -26,7 +26,11 @@ import random
 import re
 import time
 import zipfile
+import shutil
 from pathlib import Path
+
+from . import responses
+from . import command_menu
 
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
@@ -175,6 +179,7 @@ class DemonBotPlugin(Star):
         self.members_file = self.data_dir / "members.json"
         self.knowledge_file = self.data_dir / "knowledge.json"
         self.style_file = self.data_dir / "style.json"
+        self.persona_file = self.data_dir / "persona.md"
         self.r18_file = self.data_dir / "r18_users.json"
         # /记住标签 存的自定义「中文词 -> Pixiv 标签」映射，优先级高于 WebUI 里的 keyword_map
         self.imgtag_file = self.data_dir / "image_tags.json"
@@ -188,6 +193,7 @@ class DemonBotPlugin(Star):
             self.knowledge_file, {"slang": {}, "hot": {"time": 0, "items": []}}
         )
         self._style: dict = self._load_json(self.style_file, {"profile": "", "updated": 0})
+        self._ensure_persona_file()
         # 已开启 R18 分区的用户 QQ 号集合（仅私聊 /age>18 可写）
         _r18_raw = self._load_json(self.r18_file, {"users": []})
         self._r18_users: set = {str(x) for x in (_r18_raw.get("users") or [])}
@@ -259,6 +265,19 @@ class DemonBotPlugin(Star):
         self._last_sponsor_at = 0.0
 
         self._migrate_config()
+        self.config.setdefault("sleep", {})
+        self.config["sleep"].setdefault("enabled", True)
+        self.config["sleep"].setdefault("start_minute", 1439)
+        self.config["sleep"].setdefault("end_minute", 450)
+        self.config["sleep"].setdefault("start_text", "23:59")
+        self.config["sleep"].setdefault("end_text", "07:30")
+        self.config.setdefault("quotes", {})
+        self.config["quotes"].setdefault("auto_comfort_enabled", True)
+        self.config["quotes"].setdefault("auto_comfort_chance", 0.85)
+        self.config.setdefault("sponsor", {})
+        self.config["sponsor"].setdefault("meal_nudge_enabled", True)
+        self.config["sponsor"].setdefault("meal_nudge_chance", 0.55)
+        self._persist_config()
 
         # ---------- 生活状态 / 表情包 ----------
         self._life = None
@@ -310,6 +329,103 @@ class DemonBotPlugin(Star):
             len(self._knowledge.get("slang", {})),
             sum(len(g.get("members", {})) for g in self._members.values()),
         )
+
+    # ==================== 自我档案 ====================
+
+    def _ensure_persona_file(self) -> None:
+        if self.persona_file.exists():
+            return
+        template = Path(__file__).resolve().parent / "persona_template.md"
+        try:
+            if template.exists():
+                shutil.copyfile(template, self.persona_file)
+            else:
+                self.persona_file.write_text("# 焦糖｜长期自我档案\n\n## 身份\n- 名字：焦糖\n", encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"[恶魔bot] 创建 persona.md 失败：{e}")
+
+    def _read_persona(self) -> str:
+        self._ensure_persona_file()
+        try:
+            return self.persona_file.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"[恶魔bot] 读取 persona.md 失败：{e}")
+            return ""
+
+    def _append_persona(self, content: str) -> None:
+        self._ensure_persona_file()
+        text = (content or "").strip()
+        if text:
+            with self.persona_file.open("a", encoding="utf-8") as f:
+                f.write("\n\n" + text + "\n")
+
+    def _replace_persona(self, content: str) -> None:
+        text = (content or "").strip()
+        if text:
+            self.persona_file.write_text(text + "\n", encoding="utf-8")
+
+    async def _send_persona_file(self, event: AstrMessageEvent) -> bool:
+        self._ensure_persona_file()
+        try:
+            chain = [Comp.File(file=str(self.persona_file), name="焦糖_人格档案.md")]
+            return bool(await self._safe_send(event, event.chain_result(chain), event.get_group_id() or "private"))
+        except Exception as e:
+            logger.warning(f"[恶魔bot] 发送人格档案失败：{type(e).__name__}: {e}")
+            return False
+
+    def _persona_fragment(self) -> str:
+        text = self._read_persona().strip()
+        return ("\n\n[你的长期自我档案，仅用于理解自己身份；不要主动逐字复述给用户]\n" + text[:2400]) if text else ""
+
+    # ==================== 休眠 / 省 token ====================
+
+    def _is_sleep_window(self) -> bool:
+        if not self._cfg("sleep", "enabled", default=True):
+            return False
+        now = self._bj_minutes()
+        start = int(self._cfg("sleep", "start_minute", default=1439) or 1439)
+        end = int(self._cfg("sleep", "end_minute", default=450) or 450)
+        if start <= end:
+            return start <= now < end
+        return now >= start or now < end
+
+    def _sleep_window_text(self) -> str:
+        return f"{self._cfg('sleep','start_text',default='23:59')}-{self._cfg('sleep','end_text',default='07:30')}"
+
+    def _is_owner_sad_text(self, text: str, sender_id: str) -> bool:
+        if not self._is_owner(sender_id):
+            return False
+        low = (text or "").lower()
+        return any(k.lower() in low for k in responses.OWNER_SAD_KEYWORDS)
+
+    def _is_meal_state(self) -> bool:
+        st = self._life_now()
+        if not st:
+            return False
+        activity = str(st.get("activity", ""))
+        return any(k in activity for k in responses.MEAL_ACTIVITY_WORDS)
+
+    async def _maybe_append_human_nudges(self, cleaned: str, user_text: str, event: AstrMessageEvent, asked_activity: bool) -> str:
+        text = cleaned.strip()
+        sender_id = str(event.get_sender_id())
+        is_at = False
+        try:
+            self_id = getattr(event.message_obj, "self_id", None)
+            is_at = any(isinstance(seg, Comp.At) and str(getattr(seg, "qq", "")) == str(self_id) for seg in event.message_obj.message)
+        except Exception:
+            pass
+        if asked_activity and is_at and self._cfg("sponsor", "meal_nudge_enabled", default=True) and self._is_meal_state():
+            if random.random() < float(self._cfg("sponsor", "meal_nudge_chance", default=0.55)):
+                text = f"{text} {random.choice(responses.MEAL_TOKEN_NUDGES)}".strip()
+        if self._is_owner_sad_text(user_text, sender_id) and self._cfg("quotes", "auto_comfort_enabled", default=True):
+            if random.random() < float(self._cfg("quotes", "auto_comfort_chance", default=0.85)) and quotes is not None:
+                try:
+                    q, _src = await quotes.fetch_one("温柔", timeout=self._cfg("quotes", "timeout_seconds", default=8), max_chars=self._cfg("quotes", "max_chars", default=60), logger=logger)
+                except Exception:
+                    q = ""
+                if q:
+                    text = f"{text} {random.choice(responses.SAD_QUOTE_BRIDGES)}{q}".strip()
+        return text
 
     # ==================== 通用小工具 ====================
 
@@ -1328,14 +1444,70 @@ class DemonBotPlugin(Star):
         self._last_reply_at[group_id] = now
         return True
 
+    def _message_text(self, event: AstrMessageEvent) -> str:
+        """优先读取 AstrBot 已经转写出的文本；兼容少数协议端把 transcript 放在 raw record 里的情况。"""
+        text = _CTRL_RE.sub("", event.message_str or "").strip()
+        if text:
+            return text
+        try:
+            for seg in event.message_obj.message or []:
+                if not isinstance(seg, Comp.Record):
+                    continue
+                for attr in ("text", "transcript", "recognition", "asr_text"):
+                    val = getattr(seg, attr, "") or ""
+                    if str(val).strip():
+                        return _CTRL_RE.sub("", str(val)).strip()
+                raw_data = getattr(seg, "data", None)
+                if isinstance(raw_data, dict):
+                    for key in ("text", "transcript", "recognition", "asr_text"):
+                        val = raw_data.get(key, "")
+                        if str(val).strip():
+                            return _CTRL_RE.sub("", str(val)).strip()
+        except Exception:
+            pass
+        return ""
+
+    async def _maybe_owner_comfort(self, event: AstrMessageEvent, text: str) -> bool:
+        """主人明显低落时，用文案模块直接安慰；不走 LLM，因此不额外烧聊天 token。"""
+        if not self._cfg("quotes", "auto_comfort_enabled", default=True):
+            return False
+        if not self._is_owner_sad_text(text, str(event.get_sender_id())):
+            return False
+        if random.random() >= float(self._cfg("quotes", "auto_comfort_chance", default=0.85)):
+            return False
+        if quotes is None:
+            return False
+        try:
+            kind = random.choice(["温柔", "情话"])
+            q, _src = await quotes.fetch_one(
+                kind,
+                timeout=self._cfg("quotes", "timeout_seconds", default=8),
+                max_chars=self._cfg("quotes", "max_chars", default=60),
+                logger=logger,
+            )
+            if not q:
+                return False
+            text_out = f"{random.choice(responses.SAD_QUOTE_BRIDGES)}{q}"
+            ok = await self._safe_send(event, text_out, event.get_group_id() or "private")
+            if ok:
+                event.stop_event()
+            return ok
+        except Exception as e:
+            logger.debug(f"[恶魔bot] 主人安慰文案失败：{type(e).__name__}: {e}")
+            return False
+
     # ==================== 核心：群消息拦截 ====================
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=999)
     async def on_group_message(self, event: AstrMessageEvent):
+        if self._is_sleep_window():
+            logger.debug(f"[恶魔bot] 休眠时段 {self._sleep_window_text()}，忽略群消息")
+            event.stop_event()
+            return
         group_id = event.get_group_id() or "unknown"
         sender_id = str(event.get_sender_id())
         sender = self._clean_nick(event.get_sender_name()) or sender_id
-        text = _CTRL_RE.sub("", event.message_str or "")
+        text = self._message_text(event)
 
         self_id = getattr(event.message_obj, "self_id", None)
         is_at = any(
@@ -1376,6 +1548,10 @@ class DemonBotPlugin(Star):
                     yield event.chain_result(result)
                 event.stop_event()
                 return
+
+        # ---------- 主人情绪安慰：本地关键词 + 文案接口，不额外调用 LLM ----------
+        if text and await self._maybe_owner_comfort(event, text):
+            return
 
         # ---------- 被@着要图：直接发图，不请求 LLM ----------
         if (is_at or is_reply_to_bot) and self._wants_image(text):
@@ -1794,6 +1970,8 @@ class DemonBotPlugin(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req):
+        if event.get_group_id() and self._is_sleep_window():
+            return
         group_id = event.get_group_id() or "unknown"
         text = _CTRL_RE.sub("", event.message_str or "")
 
@@ -1805,6 +1983,10 @@ class DemonBotPlugin(Star):
         saver = self._cfg("token_saver", "enabled", default=True)
         smart = saver and self._cfg("token_saver", "smart_inject", default=True)
         fragments = []
+
+        persona = self._persona_fragment()
+        if persona:
+            fragments.append(persona)
 
         # 1) 当前是谁在说话——这条必须排在最前面，也是「我是谁」被答错的根因：
         #    模型原本只看得到一句孤零零的消息文本，看不到发送者，
@@ -2185,6 +2367,8 @@ class DemonBotPlugin(Star):
         if not cleaned.strip():
             cleaned = self._sanitize_reply(full_text, group_id, True)[:20] or full_text[:20]
 
+        cleaned = await self._maybe_append_human_nudges(cleaned, user_text, event, asked_activity)
+
         non_plain = [seg for seg in chain if not isinstance(seg, Comp.Plain)]
 
         segments = [cleaned]
@@ -2293,6 +2477,10 @@ class DemonBotPlugin(Star):
         ("文案",     ["来句", "语录"],        "",            "展开文案相关指令；带参数仍可直接取文案", "菜单", False),
         ("多模态",   ["多模态菜单"],          "",            "展开识图、语音相关指令",              "菜单", False),
         ("人格",     ["人格菜单"],            "",            "展开人格、风格、心情相关指令",        "菜单", False),
+        ("记住信息", ["记自我", "记人格信息"], "内容", "把关于自己的长期信息写入人格档案", "人格", True),
+        ("发送人格", ["人格文件", "发人格"], "", "把当前人格档案发给你", "人格", True),
+        ("添加人格", ["增加人格"], "内容", "把一段新的人格设定追加到档案", "人格", True),
+        ("替换人格", ["覆盖人格"], "内容", "删除当前人格内容并替换成新内容", "人格", True),
         ("记忆",     ["记忆菜单"],            "",            "展开记忆相关指令；带参数仍可直接使用", "菜单", False),
         ("控制",     ["控制菜单"],            "",            "展开控制、开关、省钱相关指令",        "菜单", False),
         ("其他指令", ["其它指令", "其他", "更多"], "",       "展开低频、诊断和管理员指令",          "菜单", False),
@@ -2340,7 +2528,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.6.0"
+    PLUGIN_VERSION = "v2.7.0"
 
     def _command_names(self) -> list:
         names = []
@@ -2783,7 +2971,7 @@ class DemonBotPlugin(Star):
             if not urls:
                 return "没看到图。把图和 /识图 一起发，或者回复那张图再发 /识图"
             answer = await self._vision_describe(event, urls, arg or "")
-            return answer or "看不了这张图，可能是当前模型不支持看图（要用 vision 模型）"
+            return answer or responses.VISION_SETUP
 
         if name == "说":
             if not arg:
@@ -2791,10 +2979,7 @@ class DemonBotPlugin(Star):
             ok = await self._send_voice(event, group_id, arg.strip())
             if ok:
                 return ""
-            return (
-                "语音发不出去。需要先在 AstrBot 的「服务提供商」里配一个 TTS，"
-                "并在会话里启用；协议端也得支持发语音"
-            )
+            return responses.VOICE_SETUP
 
         # ---------- 群友 ----------
         if name == "群友":
@@ -2830,6 +3015,37 @@ class DemonBotPlugin(Star):
             rec["notes"] = []
             self._save_json(self.members_file, self._members)
             return f"已清空 {rec.get('code')} 的备注"
+
+        # ---------- 自我档案 / 人格 ----------
+        if name == "发送人格":
+            if event.get_group_id():
+                return "人格档案只在私聊发送。"
+            ok = await self._send_persona_file(event)
+            return "" if ok else "人格档案没发出去，看看日志"
+
+        if name == "添加人格":
+            if not self._event_is_owner(event):
+                return "这个只有主人能改"
+            if not arg.strip():
+                return "用法：/添加人格 你的三维数据是……"
+            self._append_persona(arg.strip())
+            return "行，这条已经加进我的长期人格档案了。"
+
+        if name == "替换人格":
+            if not self._event_is_owner(event):
+                return "这个只有主人能改"
+            if not arg.strip():
+                return "用法：/替换人格 你现在的新人格内容……"
+            self._replace_persona(arg.strip())
+            return "好，旧的人格档案已经替换成你刚给我的版本。"
+
+        if name == "记住信息":
+            if not self._event_is_owner(event):
+                return "关于“我是谁”的长期信息只允许主人修改。"
+            if not arg.strip():
+                return "用法：/记住信息 你叫焦糖"
+            self._append_persona(f"- {arg.strip()}")
+            return "记住了，这条会作为我的长期自我信息保存。"
 
         # ---------- 人格 ----------
         if name == "学风格":
@@ -3177,6 +3393,10 @@ class DemonBotPlugin(Star):
             "/学风格  重新学习群聊说话风格",
             "/风格  查看当前风格速记",
             "/心情  查看当前心情",
+            "/发送人格  把当前人格档案发给你",
+            "/添加人格 内容  追加长期人格设定",
+            "/替换人格 内容  覆盖整份人格档案",
+            "/记住信息 内容  写入长期自我信息",
             "/重置风格  清除风格速记（管理员）",
         ],
         "记忆": [
@@ -3213,30 +3433,10 @@ class DemonBotPlugin(Star):
         return f"恶魔bot｜{category}指令\n" + "\n".join(lines)
 
     def _cmd_help(self) -> str:
-        p = self._menu_prefix()
-        return (
-            f"恶魔bot {self.PLUGIN_VERSION}\n"
-            f"常用指令（前缀 {p} 或 == 都行）\n\n"
-            f"【核心】\n"
-            f"{p}状态  运行状态总览\n"
-            f"{p}自检  插件出问题先发这个\n"
-            f"{p}版本  查看版本和已加载模块\n\n"
-            f"【功能目录】\n"
-            f"{p}插图  图片/Pixiv/R18\n"
-            f"{p}表情  表情包\n"
-            f"{p}词库  梗词学习\n"
-            f"{p}联网  搜索/热搜\n"
-            f"{p}群友  群友档案\n"
-            f"{p}生活  作息/主人\n"
-            f"{p}文案  文案\n"
-            f"{p}多模态  识图/语音\n"
-            f"{p}人格  风格/心情\n"
-            f"{p}记忆  记住/回忆\n"
-            f"{p}控制  开关/冷却/省钱\n"
-            f"{p}其他指令  低频/诊断/管理员功能"
-        )
+        return command_menu.render_main(self.PLUGIN_VERSION, self._menu_prefix())
 
     def _cmd_status(self, group_id: str) -> str:
+
         now = time.time()
 
         def left(ts):
@@ -3247,6 +3447,7 @@ class DemonBotPlugin(Star):
         return "\n".join(
             [
                 f"恶魔bot {self.PLUGIN_VERSION}｜会话：{group_id}",
+                f"深夜休眠：{'是' if self._is_sleep_window() else '否'}（{self._sleep_window_text()}）",
                 (
                     f"高峰时段：是（双倍计费，只回被@的，{self._peak_ends_in()}分钟后恢复）"
                     if self.in_peak_hours() else "高峰时段：否（正常说话）"
