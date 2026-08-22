@@ -1973,6 +1973,20 @@ class DemonBotPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=999)
     async def on_group_message(self, event: AstrMessageEvent):
+        """薄壳：真正的逻辑在 _on_group_message_impl 里。
+
+        这层存在的唯一理由是兜异常。handler 一旦抛出去，框架会替你回一个 ":("，
+        插件还会兴冲冲地给这条占位配个表情——排查时看到的现象离真正的错因十万八千里。
+        包一层之后，插件自己的 bug 只会在日志里留下清晰的 Traceback，群里不会有任何异样。
+        """
+        try:
+            async for ret in self._on_group_message_impl(event):
+                yield ret
+        except Exception as e:
+            logger.exception(f"[恶魔bot] 群聊处理器崩了（{type(e).__name__}: {e}），本条消息已跳过")
+            event.stop_event()
+
+    async def _on_group_message_impl(self, event: AstrMessageEvent):
         self._last_bot = getattr(event, "bot", None) or self._last_bot
         group_id = event.get_group_id() or "unknown"
         if group_id != "unknown":
@@ -2216,6 +2230,15 @@ class DemonBotPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=999)
     async def on_private_message(self, event: AstrMessageEvent):
+        """薄壳，理由同 on_group_message。"""
+        try:
+            async for ret in self._on_private_message_impl(event):
+                yield ret
+        except Exception as e:
+            logger.exception(f"[恶魔bot] 私聊处理器崩了（{type(e).__name__}: {e}），本条消息已跳过")
+            event.stop_event()
+
+    async def _on_private_message_impl(self, event: AstrMessageEvent):
         """私聊里同样能用全部指令。
 
         私聊不做插话判断、不做静音、不做复读——那些都是群聊场景的东西。
@@ -2227,6 +2250,7 @@ class DemonBotPlugin(Star):
         sender_id = str(event.get_sender_id())
         if self._is_owner(sender_id, event.get_sender_name() or ""):
             self._last_owner_message_at = time.time()
+        sender = self._clean_nick(event.get_sender_name()) or sender_id
         text = _CTRL_RE.sub("", event.message_str or "")
 
         if self._event_is_owner(event) and self._is_recharge_notice(text):
@@ -2861,6 +2885,20 @@ class DemonBotPlugin(Star):
 
         user_text = _CTRL_RE.sub("", event.message_str or "")
 
+        # ---------- 插件崩溃占位拦截 ----------
+        # AstrBot 的 handler 抛异常时，框架会替你回一个 ":(" 占位。
+        # 它不是 bot 想说的话，不该被当成正常聊天去分段、配表情
+        # （不然就会出现"报错之后还给自己配了个挨骂表情"这种滑稽场面）。
+        # 这里只在整条回复就是这个占位时才拦，避免误伤正常聊天里的颜文字。
+        if full_text.strip() in {":(", ":-(", ": (", "（；´д｀）"}:
+            logger.error(
+                "[恶魔bot] 拦下框架的崩溃占位回复。这说明某个 handler 抛异常了，"
+                "去日志里搜 Traceback 看具体哪一行"
+            )
+            result.chain = []
+            event.stop_event()
+            return
+
         # ---------- 报错拦截：把「LLM 响应错误: All chat models failed」换成人话 ----------
         # 你日志里最常见的那条是 402 Insufficient Balance——余额没了。
         # 直接把框架的英文报错甩进群里既难看又没用，不如让它 @主人 要钱。
@@ -3091,7 +3129,7 @@ class DemonBotPlugin(Star):
         ("省钱",     ["用量", "省流"],        "",            "看高峰时段、省流状态和已省下的请求", "控制", False),
     ]
 
-    PLUGIN_VERSION = "v2.9.3"
+    PLUGIN_VERSION = "v2.9.7"
 
     def _command_names(self) -> list:
         names = []

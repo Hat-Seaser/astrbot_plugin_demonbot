@@ -1,5 +1,5 @@
 name: astrbot_plugin_demonbot
 desc: 恶魔bot：拟人群聊插件。表情包情绪反应、动态生活作息、主人跨群识别、报错自动喊充值、Pixiv榜单取图与多p转发、文案接口、图片识别、语音、联网学梗、群友档案、风格自学习
-version: 2.9.6
+version: 2.9.7
 author: Hat-Seaser
 repo: https://github.com/Hat-Seaser/astrbot_plugin_demonbot
