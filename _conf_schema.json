@@ -347,8 +347,8 @@
         "default": true
       },
       "platform_mute_backoff_minutes": {
-        "description": "被QQ平台禁言后退避多少分钟",
-        "hint": "检测到 retcode 1200「当前处于被禁言状态」时启用，期间不再请求 LLM 也不再尝试发送，省 token 也避免日志刷屏。管理员发 /解禁 可立即清除",
+        "description": "（已废弃，不再生效）曾经的猜测型退避时长",
+        "hint": "现在改成发送失败时主动查询 get_group_member_info 的 shut_up_timestamp 来确认是否真被禁言，用平台返回的真实解禁时间，不再靠这个数字猜测，这一项保留只是为了不破坏旧配置文件",
         "type": "int",
         "default": 30
       }
@@ -854,22 +854,20 @@
         "hint": "可填 monthly（月榜）、weekly（周榜）、daily（日榜）、rookie（新人榜）、original（原创榜）。带标签时前一个榜里筛不出结果才试下一个",
         "type": "list",
         "default": [
-          "monthly",
-          "weekly",
-          "daily"
+          "monthly"
         ]
       },
       "rank_pages": {
         "description": "不带标签时取榜单前几页",
         "hint": "一页 50 名。2 = 本月前 100 张里随机抽（推荐）。对应 /开关 榜单页数",
         "type": "int",
-        "default": 2
+        "default": 1
       },
       "rank_tag_pages": {
         "description": "带标签时翻榜单前几页",
         "hint": "标签越冷门越需要翻得深。4 = 在前 200 名里找带这个标签的作品",
         "type": "int",
-        "default": 22
+        "default": 1
       },
       "rank_cache_seconds": {
         "description": "榜单缓存时间（秒）",
@@ -1178,6 +1176,34 @@
         "hint": "默认关。取图失败多半是网络问题，跟 token 无关",
         "type": "bool",
         "default": false
+      }
+    }
+  },
+  "like": {
+    "description": "每日集中点赞（主人 + 授权好友）",
+    "type": "object",
+    "items": {
+      "daily_owner": {
+        "description": "每天自动给主人点10个赞",
+        "type": "bool",
+        "default": true
+      },
+      "run_at_hour": {
+        "description": "每天几点集中点赞",
+        "hint": "24小时制，比如21表示晚上9点。改成一天只在这一个时间点统一发，不再每隔几分钟轮询重试",
+        "type": "int",
+        "default": 21
+      },
+      "run_at_minute": {
+        "description": "具体几分",
+        "type": "int",
+        "default": 0
+      },
+      "max_times_per_user": {
+        "description": "每人每天最多点赞次数",
+        "hint": "QQ 平台本身单人每天上限就是10，这里保留是为了以后想设更低的值",
+        "type": "int",
+        "default": 10
       }
     }
   },

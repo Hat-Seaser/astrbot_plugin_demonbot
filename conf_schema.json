@@ -849,22 +849,20 @@
         "hint": "可填 monthly（月榜）、weekly（周榜）、daily（日榜）、rookie（新人榜）、original（原创榜）。带标签时前一个榜里筛不出结果才试下一个",
         "type": "list",
         "default": [
-          "monthly",
-          "weekly",
-          "daily"
+          "monthly"
         ]
       },
       "rank_pages": {
         "description": "不带标签时取榜单前几页",
         "hint": "一页 50 名。2 = 本月前 100 张里随机抽（推荐）。对应 /开关 榜单页数",
         "type": "int",
-        "default": 2
+        "default": 1
       },
       "rank_tag_pages": {
         "description": "带标签时翻榜单前几页",
         "hint": "标签越冷门越需要翻得深。4 = 在前 200 名里找带这个标签的作品",
         "type": "int",
-        "default": 22
+        "default": 1
       },
       "rank_cache_seconds": {
         "description": "榜单缓存时间（秒）",

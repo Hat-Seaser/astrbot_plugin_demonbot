@@ -397,7 +397,8 @@ class DemonBotPlugin(Star):
 
             like_cfg = self.config.setdefault("like", {})
             like_cfg.setdefault("daily_owner", True)
-            like_cfg.setdefault("auto_run_interval_seconds", 600)
+            like_cfg.setdefault("run_at_hour", 21)
+            like_cfg.setdefault("run_at_minute", 0)
             like_cfg.setdefault("max_times_per_user", 10)
 
             poke_cfg.setdefault("mention_id_mode", "none")
@@ -430,7 +431,7 @@ class DemonBotPlugin(Star):
             token_cfg["max_context_chars_per_message"] = min(max(int(token_cfg.get("max_context_chars_per_message") or 90), 40), 90)
             token_cfg["max_system_prompt_chars"] = min(max(int(token_cfg.get("max_system_prompt_chars") or 900), 300), 900)
             token_cfg["max_persona_chars"] = min(max(int(token_cfg.get("max_persona_chars") or 900), 300), 900)
-            token_cfg.setdefault("daily_aux_calls", 30)
+            token_cfg.setdefault("daily_aux_call_limit", 30)
 
             if version >= 5:
                 self.config["_schema_version"] = max(version, 8)
@@ -477,9 +478,9 @@ class DemonBotPlugin(Star):
                     imgs["backends"] = ["pixiv"] + backends
                     logger.info("[恶魔bot] 迁移：图源顺序前面加上了 pixiv（官方排行榜）")
                 imgs.setdefault("prefer_ranking", True)
-                imgs.setdefault("rank_modes", ["monthly", "weekly", "daily"])
-                imgs.setdefault("rank_pages", 2)
-                imgs.setdefault("rank_tag_pages", 22)
+                imgs.setdefault("rank_modes", ["monthly"])
+                imgs.setdefault("rank_pages", 1)
+                imgs.setdefault("rank_tag_pages", 1)
                 imgs.setdefault("rank_cache_seconds", 21600)
                 imgs.setdefault("pixiv_cookie", "")
                 imgs.setdefault("pixiv_host", "https://www.pixiv.net")
@@ -545,9 +546,9 @@ class DemonBotPlugin(Star):
             if backends and "pixiv" not in backends:
                 imgs["backends"] = ["pixiv"] + backends
             imgs.setdefault("prefer_ranking", True)
-            imgs.setdefault("rank_modes", ["monthly", "weekly", "daily"])
-            imgs.setdefault("rank_pages", 2)
-            imgs.setdefault("rank_tag_pages", 22)
+            imgs.setdefault("rank_modes", ["monthly"])
+            imgs.setdefault("rank_pages", 1)
+            imgs.setdefault("rank_tag_pages", 1)
             imgs.setdefault("rank_cache_seconds", 21600)
             imgs.setdefault("pixiv_cookie", "")
             imgs.setdefault("pixiv_host", "https://www.pixiv.net")
@@ -1115,8 +1116,41 @@ class DemonBotPlugin(Star):
     def _is_admin(self, sender_id: str) -> bool:
         return str(sender_id) in self.admin_ids
 
+    async def _check_actually_muted(self, event: AstrMessageEvent, group_id: str) -> int:
+        """
+        真正问一次 QQ 平台"我是不是被禁言了"，返回解禁的 unix 时间戳（0 表示没被禁言，或者查不到）。
+
+        不能靠猜：LLOneBot/NapCat 对很多完全不相关的失败
+        （签名服务挂了、等自身消息回显超时……）也一律报 retcode=1200，
+        错误文本里天然带着"1200"这几个字，字符串匹配会把这些也误判成禁言。
+        这里改成主动调用 get_group_member_info 查自己的 shut_up_timestamp，
+        这是平台自己给出的、真实存在或不存在禁言的唯一权威信号。
+        """
+        try:
+            bot = getattr(event, "bot", None)
+            if bot is None:
+                return 0
+            self_id = getattr(event.message_obj, "self_id", None)
+            if not self_id:
+                return 0
+            api = getattr(bot, "api", bot)
+            info = await api.call_action(
+                "get_group_member_info",
+                group_id=int(group_id),
+                user_id=int(self_id),
+                no_cache=True,
+            )
+            data = info.get("data", info) if isinstance(info, dict) else info
+            until = int((data or {}).get("shut_up_timestamp", 0) or 0)
+            return until if until > time.time() else 0
+        except Exception as e:
+            logger.debug(f"[恶魔bot] 查询自身禁言状态失败，按未禁言处理：{type(e).__name__}: {e}")
+            return 0
+
     async def _safe_send(self, event: AstrMessageEvent, text_or_chain, group_id: str = ""):
-        """统一发送出口：捕获 QQ 平台禁言(1200)，进入退避而不是反复撞墙。"""
+        """统一发送出口：发送失败时去问平台「我是不是真被禁言了」，
+        而不是看到错误文本里带"1200"就自己吓自己进入退避——那样会把签名失败、
+        echo 超时这类和禁言毫不相关的临时故障也误判成被禁言。"""
         if isinstance(text_or_chain, str):
             payload = event.chain_result([Comp.Plain(text_or_chain)])
         else:
@@ -1125,17 +1159,17 @@ class DemonBotPlugin(Star):
             await event.send(payload)
             return True
         except Exception as e:
-            msg = str(e)
-            if "1200" in msg or "禁言" in msg:
-                minutes = self._cfg("mute", "platform_mute_backoff_minutes", default=30)
-                gid = group_id or (event.get_group_id() or "unknown")
-                self._platform_muted_until[gid] = time.time() + minutes * 60
+            gid = group_id or (event.get_group_id() or "unknown")
+            until = await self._check_actually_muted(event, gid)
+            if until:
+                self._platform_muted_until[gid] = until
                 logger.warning(
-                    f"[恶魔bot] 群 {gid} 里 bot 被QQ平台禁言，暂停发言 {minutes} 分钟"
+                    f"[恶魔bot] 群 {gid} 确认被QQ平台禁言，预计 "
+                    f"{time.strftime('%H:%M:%S', time.localtime(until))} 解禁"
                     f"（管理员可用 /解禁 强制清除）"
                 )
             else:
-                logger.warning(f"[恶魔bot] 发送失败：{e}")
+                logger.warning(f"[恶魔bot] 发送失败，但确认没被禁言，大概率是协议端临时故障：{e}")
             return False
 
     # ==================== LLM 调用小助手（供联网/风格模块用） ====================
@@ -1752,17 +1786,48 @@ class DemonBotPlugin(Star):
 
         return "用法：/点赞 ｜ /点赞 同意5 2677518198 ｜ /点赞 撤销 2677518198 ｜ /点赞 列表"
 
+    def _seconds_until_next_clock(self, hour: int, minute: int = 0) -> float:
+        """距离下一次本地时间 HH:MM 还有多少秒；今天这个点已经过了就算明天的。"""
+        now = time.localtime()
+        target = time.struct_time((
+            now.tm_year, now.tm_mon, now.tm_mday, hour, minute, 0,
+            now.tm_wday, now.tm_yday, now.tm_isdst,
+        ))
+        target_ts = time.mktime(target)
+        now_ts = time.mktime(now)
+        if target_ts <= now_ts:
+            target_ts += 24 * 60 * 60
+        return max(1.0, target_ts - now_ts)
+
     async def _daily_like_loop(self):
-        """每天自动给主人和已授权好友点赞；每个用户每天最多 10 次。"""
-        await asyncio.sleep(15)
+        """每天固定时间点集中点赞一次，而不是每隔几分钟就轮询一遍。
+
+        原来的实现是每 auto_run_interval_seconds（默认600秒）醒一次去检查，
+        一旦某次 _send_like 失败（哪怕是协议端抽风之类和点赞本身无关的原因），
+        当天剩下的时间会每 10 分钟重试一次，看起来就是"点赞太频繁"。
+        现在改成算准下一个 21:00（可在配置里改），睡到那个点再跑一次，
+        跑完不管成功与否都直接睡到明天同一时间，不会在同一天里反复重试刷存在感。
+        """
         while True:
             try:
+                hour = int(self._cfg("like", "run_at_hour", default=21))
+                minute = int(self._cfg("like", "run_at_minute", default=0))
+                hour = min(max(hour, 0), 23)
+                minute = min(max(minute, 0), 59)
+                wait_s = self._seconds_until_next_clock(hour, minute)
+                logger.info(
+                    f"[恶魔bot] 下次集中点赞：{wait_s / 3600:.1f} 小时后"
+                    f"（每天 {hour:02d}:{minute:02d} 跑一次）"
+                )
+                await asyncio.sleep(wait_s)
                 await self._run_daily_likes_once()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.warning(f"[恶魔bot] 自动点赞任务异常：{type(e).__name__}: {e}")
-            await asyncio.sleep(max(60, int(self._cfg("like", "auto_run_interval_seconds", default=600))))
+                # 出异常也不要死循环空转；睡一小时后回到循环顶部，
+                # 会重新算下一个 21:00，不会变成分钟级重试
+                await asyncio.sleep(3600)
 
     async def _run_daily_likes_once(self):
         if not self._cfg("like", "daily_owner", default=True):
@@ -2409,7 +2474,7 @@ class DemonBotPlugin(Star):
             return False
         if self.in_peak_hours() and self._cfg("peak_hours", "block_background_llm", default=True):
             return False
-        limit = self._cfg("token_saver", "daily_aux_call_limit", default=60)
+        limit = self._cfg("token_saver", "daily_aux_call_limit", default=30)
         if limit <= 0:
             return True
         return self._aux_used_today() < limit
@@ -3082,7 +3147,7 @@ class DemonBotPlugin(Star):
         ("控制",     ["控制菜单"],            "",            "展开控制、开关、省钱相关指令",        "菜单", False),
         ("其他指令", ["其它指令", "其他", "更多"], "",       "展开低频、诊断和管理员指令",          "菜单", False),
 
-        ("图",       ["来图", "图片", "看看"], "腿/真腿/好腿", "按标签取图（真=真人，好=R18且需私聊解锁）", "插图", False),
+        ("图",       ["来图", "图片", "看看"], "腿/真腿/好腿", "月榜前50随机（可带标签过滤；好=R18周榜前50；真=真人）", "插图", False),
         ("图源测试", [],                      "",            "体检图源，并显示取到图的规格尺寸",   "插图", False),
         ("标签",     [],                      "腿",           "查某个词会被映射成哪些 Pixiv 标签", "插图", False),
         ("记住标签", ["记标签", "学标签"],     "校服=制服",     "自定义中文词→Pixiv标签，立刻生效并永久保存", "插图", False),
@@ -3353,10 +3418,11 @@ class DemonBotPlugin(Star):
             self._set_r18_unlocked(event.get_sender_id(), True)
             return (
                 "已为你开启 R18 分区。\n"
-                "私聊可用「好」请求成人图，例如：\n"
-                "  /看看好腿  → Pixiv R18\n"
-                "  /看看好真腿 → 真人 R18\n"
-                "不含「好」仍是全年龄/擦边。关闭请发 /age<18"
+                "私聊示例：\n"
+                "  /看看好     → R18 周榜前50随机（需配置 Pixiv Cookie）\n"
+                "  /看看好腿   → 同上并尽量按标签过滤\n"
+                "  /看看好真   → 真人\n"
+                "全年龄请用 /看看（月榜前50）。关闭：/age<18"
             )
 
         if name == "age<18":
@@ -3924,7 +3990,7 @@ class DemonBotPlugin(Star):
         windows = "、".join(
             self._cfg("peak_hours", "windows", default=None) or DEFAULT_PEAK_WINDOWS
         )
-        limit = self._cfg("token_saver", "daily_aux_call_limit", default=60)
+        limit = self._cfg("token_saver", "daily_aux_call_limit", default=30)
         minutes = self._bj_minutes()
         now_bj = f"{minutes // 60:02d}:{minutes % 60:02d}"
         lines = [
@@ -4589,19 +4655,27 @@ class DemonBotPlugin(Star):
                 return "MATURE_PRIVATE_ONLY"
             if not self._user_r18_unlocked(user_id):
                 return "NEED_R18_UNLOCK"
-        tags = await self._resolve_image_tags(keyword) if keyword else []
+        # 无关键词时不解析标签，直接月榜前 50，少一次网络请求
+        tags = await self._resolve_image_tags(keyword) if (keyword and str(keyword).strip()) else []
         # 画质档位：默认不再要原图。原图动辄十几 MB，发到 QQ 又慢又费流量，
         # 而群聊本来就会二次压缩，跟 regular（约1200px）几乎看不出差别。
         quality = images.normalize_quality(
             quality or self._cfg("images", "quality", default="regular")
         )
-        # R18 时优先走支持成人分区的 lolicon/anosu，跳过全年龄排行榜
+        # 全年龄 / R18 都优先官方榜前 50；R18 用 weekly_r18（需 Cookie），失败才 lolicon
         backends = self._image_backends()
-        if use_r18 and not is_real:
-            backends = [b for b in backends if b != "pixiv"] or ["lolicon", "anosu"]
+        if is_real:
+            backends = ["real"]
+        elif use_r18:
+            # 保留 pixiv 以尝试官方 R18 周榜；其后仍可走 lolicon
+            if "pixiv" not in backends:
+                backends = ["pixiv"] + list(backends)
             if "lolicon" not in backends:
-                backends = ["lolicon"] + backends
+                backends = list(backends) + ["lolicon"]
         try:
+            pixiv_kwargs = self._pixiv_args()
+            if use_r18:
+                pixiv_kwargs["rank_modes"] = ["weekly_r18", "daily_r18"]
             results = await images.fetch(
                 tags,
                 backends=backends,
@@ -4618,7 +4692,7 @@ class DemonBotPlugin(Star):
                 real=is_real,
                 mature=use_r18,
                 quality=quality,
-                **(self._pixiv_args() if not use_r18 else {}),
+                **pixiv_kwargs,
             )
         except Exception as e:
             logger.warning(f"[恶魔bot] 取图失败：{type(e).__name__}: {e}")
@@ -4667,9 +4741,9 @@ class DemonBotPlugin(Star):
             pixiv_host=str(
                 self._cfg("images", "pixiv_host", default="https://www.pixiv.net") or ""
             ).strip() or "https://www.pixiv.net",
-            rank_modes=self._cfg("images", "rank_modes", default=None) or ["monthly", "weekly", "daily"],
-            rank_pages=int(self._cfg("images", "rank_pages", default=2) or 2),
-            rank_tag_pages=int(self._cfg("images", "rank_tag_pages", default=22) or 22),
+            rank_modes=self._cfg("images", "rank_modes", default=None) or ["monthly"],
+            rank_pages=1,
+            rank_tag_pages=1,
             rank_cache_seconds=int(self._cfg("images", "rank_cache_seconds", default=21600) or 21600),
             min_bookmarks=int(self._cfg("images", "min_bookmarks", default=0) or 0),
             users_gate=gate or [10000, 5000, 1000],

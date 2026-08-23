@@ -6,17 +6,13 @@
 1. pixiv（本版新增，默认排第一）
    直接打 Pixiv 自己的两个接口，这是「画师水平高」的唯一可靠来源：
    - 排行榜  https://www.pixiv.net/ranking.php?mode=monthly&content=illust&format=json&p=N
-     每页 50 条，p=1、p=2 就是「本月前 100 张」。返回里带 rating_count（收藏/评分数）、
-     view_count（浏览数）、illust_page_count（多 p 张数）、tags、原图宽高。
-     排行榜本身就是全站按热度排出来的，能进月榜前 100 的基本都是头部画师，
-     这比「随机抽 + 按分辨率过滤」在画质上高一个数量级。
-     全年龄榜不需要登录；带上 Cookie 只会更稳（不会被风控）。
-   - 标签搜索 https://www.pixiv.net/ajax/search/artworks/<tag>
-     月榜里凑不出某个冷门标签时用它兜底。Pixiv 的「按热门排序」是会员功能，
-     免费号拿不到，所以这里用另一条路：Pixiv 会给作品自动打
-     「1000users入り」「5000users入り」「10000users入り」这类收藏量里程碑标签，
-     搜索时把它和你的标签一起搜（空格=AND），等价于「收藏数≥N 的作品」。
-     这条路需要你的 Pixiv Cookie（PHPSESSID），没配就自动跳过。
+     每页 50 条，p=1 就是「本月前 50 张」。返回里带 rating_count、view_count、
+     illust_page_count（多 p）、tags。月榜是全站按热度排的官方榜，
+     不需要会员、不需要登录即可 JSON 拉取；这是免费账号能拿到的最高质量来源。
+   - 重要限制：标签页的「按热门度排序」是 Pixiv 会员功能，bot 和免费号都拿不到。
+     因此带关键词时，策略是「在月榜前 50 里按标签过滤」，而不是伪造标签热门榜。
+   - R18 榜 mode=weekly_r18 / daily_r18 需要登录 Cookie；没配 Cookie 时回退 lolicon。
+   - 标签搜索（users入り）仅作可选补强，默认关闭，避免质量被搜索结果拉低。
 
 2. lolicon / anosu（老图源，保留做兜底）
    公开索引站，无需登录，但返回字段里没有任何热度信号，只能靠分辨率粗筛。
@@ -103,9 +99,10 @@ def _pick_url(urls: dict, quality: str = "regular") -> tuple:
 
 PIXIV_HOST_DEFAULT = "https://www.pixiv.net"
 
-# 默认的排行榜模式顺序：月榜优先（题目要求「本月前一百」），冷门标签在月榜里凑不齐时
-# 再退到周榜、日榜——都是热度榜，画师水平一样有保证。
-DEFAULT_RANK_MODES = ["monthly", "weekly", "daily"]
+# 全年龄默认只走月榜（官方热度，无需会员）。
+DEFAULT_RANK_MODES = ["monthly"]
+# R18 官方榜（需要 Cookie）
+DEFAULT_R18_RANK_MODES = ["weekly_r18", "daily_r18"]
 
 # 收藏量里程碑标签，从高到低试。10000users入り ≈ 万收藏，属于全站头部。
 DEFAULT_USERS_GATE = [10000, 5000, 1000]
@@ -226,7 +223,7 @@ async def _resolve_original(pic: dict, timeout: float = 8.0) -> None:
         pic["size_used"] = "regular"
 
 
-def _norm_rank_item(item: dict, proxy: str, quality: str) -> dict:
+def _norm_rank_item(item: dict, proxy: str, quality: str, *, r18: bool = False, mode: str = "") -> dict:
     pid = str(item.get("illust_id") or "")
     thumb = item.get("url") or ""
     try:
@@ -241,6 +238,7 @@ def _norm_rank_item(item: dict, proxy: str, quality: str) -> dict:
             return int(v)
         except (TypeError, ValueError):
             return 0
+    is_r18 = bool(r18) or ("r18" in str(mode or "").lower())
     return {
         "url": pages[0],
         "page_urls": pages,
@@ -256,8 +254,8 @@ def _norm_rank_item(item: dict, proxy: str, quality: str) -> dict:
         "views": _int(item.get("view_count")),
         "rank": _int(item.get("rank")),
         "size_used": "original" if normalize_quality(quality) == "original" else "master1200",
-        "source": "pixiv榜",
-        "r18": False,
+        "source": f"pixiv榜/{mode or 'monthly'}",
+        "r18": is_r18,
     }
 
 
@@ -273,9 +271,9 @@ async def pixiv_ranking(
     cache_seconds: float = 21600,
     logger=None,
 ) -> list:
-    """拉排行榜。pages=2 就是前 100 名（每页 50 条），按名次顺序返回。"""
+    """拉排行榜。pages=1 就是前 50 名（每页 50 条），按名次顺序返回。"""
     host = (host or PIXIV_HOST_DEFAULT).rstrip("/")
-    pages = max(1, min(int(pages or 1), 10))
+    pages = max(1, min(int(pages or 1), 3))
     key = (host, mode, content, pages, date.today().isoformat())
     raw_items = _cache_get(_RANK_CACHE, key, cache_seconds)
 
@@ -301,8 +299,9 @@ async def pixiv_ranking(
         _cache_put(_RANK_CACHE, key, raw_items)
 
     out = []
+    is_r18 = "r18" in str(mode or "").lower()
     for it in raw_items:
-        n = _norm_rank_item(it, proxy, quality)
+        n = _norm_rank_item(it, proxy, quality, r18=is_r18, mode=mode)
         if n:
             out.append(n)
     return out
@@ -579,117 +578,133 @@ async def pixiv_direct(
     cookie: str = "",
     host: str = PIXIV_HOST_DEFAULT,
     rank_modes: list = None,
-    rank_pages: int = 2,
-    rank_tag_pages: int = 22,
+    rank_pages: int = 1,
+    rank_tag_pages: int = 1,
     rank_cache_seconds: float = 21600,
     min_bookmarks: int = 0,
     users_gate: list = None,
     month_only: bool = True,
-    search_pages: int = 2,
+    search_pages: int = 0,
+    allow_search_fallback: bool = False,
+    r18: int = 0,
     logger=None,
 ) -> list:
     """
-    Pixiv 直连取图，返回一批候选（调用方自己随机抽）。
+    Pixiv 直连取图 —— 严格走官方排行榜前 50（每页 50，默认只取第 1 页）。
 
-    没给标签  -> 直接返回榜单前 rank_pages*50 名（默认前 100）。
-    给了标签  -> 先在榜单里按标签筛（这批是全站热度前列，画师水平最有保证），
-                 筛出来太少再用官方搜索 + users入り 收藏量门槛补齐。
+    设计原则（针对「官网月榜极高质量」）：
+      - 全年龄：mode=monthly，前 50 名随机。无需登录。
+      - R18：mode=weekly_r18（需 Cookie），前 50 名随机；失败再试 daily_r18。
+      - 带关键词时：只在上述榜单前 50 里按标签过滤。
+        Pixiv 标签页的「按热门排序」是会员功能，免费接口拿不到标签热门榜，
+        因此不会假装能做「某 tag 的月榜」。
+      - 标签在月榜前 50 无命中：退回整份月榜前 50（保证画质），不再用搜索结果掺水。
+      - allow_search_fallback=True 时才启用 users入り 搜索（默认关）。
+
+    多 p：结果带 page_urls，由 main 以合并转发发出。
     """
     flat = []
     for t in tags or []:
         flat.extend(t if isinstance(t, list) else [t])
     flat = [str(x).strip() for x in flat if str(x).strip()]
 
-    rank_modes = list(rank_modes or DEFAULT_RANK_MODES)
-    pool: list = []
+    if r18:
+        rank_modes = list(rank_modes or DEFAULT_R18_RANK_MODES)
+    else:
+        rank_modes = list(rank_modes or DEFAULT_RANK_MODES)
 
-    # ---------- 1. 排行榜：多个标签按 OR 分开筛 ----------
-    if flat:
-        for mode in rank_modes:
-            try:
-                items = await pixiv_ranking(
-                    mode=mode, pages=rank_tag_pages, proxy=proxy, timeout=timeout,
-                    cookie=cookie, host=host, quality=quality,
-                    cache_seconds=rank_cache_seconds, logger=logger,
+    # 强制只取 1 页 = 前 50；即使配置写大了也截断，避免质量稀释
+    pages = 1
+    top_n = 50
+
+    ranked_pool: list = []
+    for mode in rank_modes:
+        try:
+            items = await pixiv_ranking(
+                mode=mode, pages=pages, proxy=proxy, timeout=timeout,
+                cookie=cookie, host=host, quality=quality,
+                cache_seconds=rank_cache_seconds, logger=logger,
+            )
+        except Exception as e:
+            if logger:
+                logger.debug(f"[恶魔bot] {mode} 榜异常：{type(e).__name__}: {e}")
+            items = []
+        if items:
+            ranked_pool = items[:top_n]
+            if logger:
+                logger.info(
+                    f"[恶魔bot] 已取 {mode} 榜前 {len(ranked_pool)} 名"
+                    f"{'（含多p）' if any((x.get('page_count') or 1) > 1 for x in ranked_pool) else ''}"
                 )
-            except Exception as e:
-                if logger:
-                    logger.debug(f"[恶魔bot] {mode} 榜异常：{type(e).__name__}: {e}")
-                items = []
-            if not items:
-                continue
-            for x in items:
-                score = _tag_score(x.get("tags"), flat)
-                if score > 0:
-                    x = dict(x)
-                    x["_tag_match_score"] = score
-                    pool.append(x)
-            if len(pool) >= 80:
-                break
+            break
 
+    if not ranked_pool:
+        return []
+
+    pool: list = []
+    if flat:
+        for x in ranked_pool:
+            score = _tag_score(x.get("tags"), flat)
+            if score > 0:
+                x = dict(x)
+                x["_tag_match_score"] = score
+                pool.append(x)
+        if pool:
+            if logger:
+                logger.info(
+                    f"[恶魔bot] 标签 {flat} 在榜单前 {top_n} 命中 {len(pool)} 张"
+                )
+        else:
+            # 标签页没有公开热度榜：宁可发月榜高质量，也不用搜索灌水
+            if logger:
+                logger.info(
+                    f"[恶魔bot] 标签 {flat} 未出现在榜单前 {top_n}，回退整榜随机（保画质）"
+                )
+            pool = [dict(x, _tag_match_score=0) for x in ranked_pool]
+    else:
+        pool = [dict(x, _tag_match_score=0) for x in ranked_pool]
+
+    # 可选：搜索兜底（默认关，避免低质图混入）
+    if allow_search_fallback and cookie and flat and not any(
+        int(x.get("_tag_match_score") or 0) > 0 for x in pool
+    ):
         gates = list(users_gate or DEFAULT_USERS_GATE)
-        per_tag_pool = []
-        for tag in flat[:6]:
-            tried = [f"{tag} {int(g)}users入り" for g in gates] + [tag]
-            tag_found = []
-            for w in tried:
+        for tag in flat[:3]:
+            for g in gates[:2]:
                 try:
                     found = await pixiv_search(
-                        w, pages=search_pages, proxy=proxy, timeout=timeout,
-                        cookie=cookie, host=host, quality=quality,
-                        month_only=month_only, logger=logger,
+                        f"{tag} {int(g)}users入り",
+                        pages=max(1, int(search_pages or 1)),
+                        proxy=proxy, timeout=timeout, cookie=cookie, host=host,
+                        quality=quality, month_only=month_only, logger=logger,
                     )
-                except Exception as e:
-                    if logger:
-                        logger.debug(f"[恶魔bot] 搜索「{w}」异常：{type(e).__name__}: {e}")
-                    found = []
-                if found:
-                    for x in found:
-                        x = dict(x)
-                        x["_tag_match_score"] = max(
-                            int(x.get("_tag_match_score") or 0),
-                            _tag_score(x.get("tags"), [tag]),
-                        )
-                        tag_found.append(x)
-                    if len(tag_found) >= 8:
-                        break
-            per_tag_pool.extend(tag_found)
-
-        pool.extend(per_tag_pool)
-        if not per_tag_pool and month_only:
-            for tag in flat[:6]:
-                try:
-                    pool.extend(await pixiv_search(
-                        tag, pages=search_pages, proxy=proxy, timeout=timeout,
-                        cookie=cookie, host=host, quality=quality,
-                        month_only=False, logger=logger,
-                    ))
                 except Exception:
-                    pass
-    else:
-        for mode in rank_modes:
-            try:
-                items = await pixiv_ranking(
-                    mode=mode, pages=rank_pages, proxy=proxy, timeout=timeout,
-                    cookie=cookie, host=host, quality=quality,
-                    cache_seconds=rank_cache_seconds, logger=logger,
-                )
-            except Exception as e:
-                if logger:
-                    logger.debug(f"[恶魔bot] {mode} 榜异常：{type(e).__name__}: {e}")
-                items = []
-            if items:
-                pool = items[:max(1, rank_pages) * 50]
+                    found = []
+                for x in found:
+                    x = dict(x)
+                    x["_tag_match_score"] = _tag_score(x.get("tags"), [tag])
+                    pool.append(x)
+                if len(pool) >= 10:
+                    break
+            if len(pool) >= 10:
                 break
 
     if min_bookmarks and pool:
-        strong = [x for x in pool if (x.get("bookmarks") or 0) >= min_bookmarks or not x.get("bookmarks")]
+        strong = [
+            x for x in pool
+            if (x.get("bookmarks") or 0) >= min_bookmarks or not x.get("bookmarks")
+        ]
         pool = strong or pool
-    pool = sorted(
-        enumerate(pool),
-        key=lambda iv: (-int(iv[1].get("_tag_match_score") or 0), iv[0]),
+
+    pool = _dedupe(pool)
+    # 有标签命中的优先，再按榜单名次（rank 越小越好）
+    pool.sort(
+        key=lambda x: (
+            -int(x.get("_tag_match_score") or 0),
+            int(x.get("rank") or 9999),
+        )
     )
-    return _dedupe([x for _, x in pool])
+    return pool
 
 
 # ---------------------------------------------------------------- 老图源
@@ -957,8 +972,8 @@ async def fetch(
     pixiv_cookie: str = "",
     pixiv_host: str = PIXIV_HOST_DEFAULT,
     rank_modes: list = None,
-    rank_pages: int = 2,
-    rank_tag_pages: int = 22,
+    rank_pages: int = 1,
+    rank_tag_pages: int = 1,
     rank_cache_seconds: float = 21600,
     min_bookmarks: int = 0,
     users_gate: list = None,
@@ -970,7 +985,7 @@ async def fetch(
 
     backends 里含 "pixiv" 时优先走 Pixiv 排行榜/官方搜索（画质最高的一路），
     拿不到再依次退到 lolicon / anosu。real=True 时只走真人图源。
-    r18=1 时请求成人分区（跳过全年龄排行榜，走 lolicon/anosu 或真人 R18 端点）。
+    r18=1 时优先官方 weekly_r18 榜前 50（需 Cookie），失败再走 lolicon/anosu。
     """
     quality = normalize_quality(quality)
     if real:
@@ -982,18 +997,18 @@ async def fetch(
     candidates = []
 
     r18 = 1 if r18 else 0
-    if not real and r18:
-        # 官方排行榜默认 safe，R18 改走支持成人参数的第三方
-        backends = [b for b in list(backends or []) if b != "pixiv"] or ["lolicon", "anosu"]
-    if not real and not r18 and "pixiv" in backends:
+    # R18 也优先试官方周榜（需 Cookie）；失败再由后面的 lolicon/anosu 兜底
+    if not real and "pixiv" in backends:
         try:
             candidates = await pixiv_direct(
                 tags or [], limit=limit, proxy=proxy, timeout=timeout, quality=quality,
-                cookie=pixiv_cookie, host=pixiv_host, rank_modes=rank_modes,
-                rank_pages=rank_pages, rank_tag_pages=rank_tag_pages,
+                cookie=pixiv_cookie, host=pixiv_host,
+                rank_modes=(rank_modes or (DEFAULT_R18_RANK_MODES if r18 else DEFAULT_RANK_MODES)),
+                rank_pages=1, rank_tag_pages=1,
                 rank_cache_seconds=rank_cache_seconds, min_bookmarks=min_bookmarks,
                 users_gate=users_gate, month_only=month_only,
-                search_pages=search_pages, logger=logger,
+                search_pages=search_pages, allow_search_fallback=False,
+                r18=r18, logger=logger,
             )
             candidates = _quality_filter(candidates, min_width, min_height)
         except Exception as e:  # noqa: BLE001
