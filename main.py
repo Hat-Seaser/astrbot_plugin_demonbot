@@ -2061,8 +2061,25 @@ class DemonBotPlugin(Star):
             self._last_owner_message_at = time.time()
         sender = self._clean_nick(event.get_sender_name()) or sender_id
         text = _CTRL_RE.sub("", event.message_str or "")
+
+        # 固定深夜休眠：轻量指令可用，普通聊天/@/学习/点歌全部停止。
+        #
+        # 这里原来分成两处判断：第一处（本来在这个位置）只有一句裸 return，
+        # 没有调用 event.stop_event()——在 async generator 里裸 return
+        # 只是让这个函数自己提前交卷，并不会真的掐断 AstrBot 核心管线的事件传播。
+        # 结果就是：只要核心是"无需@也可能触发LLM"的配置（这个插件全部的
+        # reply_gate/media_skip 逻辑都是建立在这个前提上的），一到休眠时间，
+        # 本插件自己反而整个失效，核心该怎么回复照样怎么回复——包括图片，
+        # 因为连 media_skip 那一段代码都还没执行到就已经"return"跑掉了。
+        # 现在把两处判断合并成一处，而且必须调用 event.stop_event() 才能
+        # 真正拦住，不能再用裸 return。
         if self._is_sleep_window():
-            return
+            cmd0, _, _ = self._parse_command(event)
+            wake_cmds = {"帮助", "状态", "自检", "版本", "token", "撤回"}
+            if cmd0 not in wake_cmds:
+                event.stop_event()
+                return
+
         music_hit = self._music_match(text)
         if music_hit and not text.startswith(("/", "==")):
             # 仅识别歌曲，不自动续写受版权保护的歌词；如用户自己提供了歌词数据库，music.py 可按其数据回填。
@@ -2079,13 +2096,6 @@ class DemonBotPlugin(Star):
             isinstance(seg, Comp.Reply) and str(getattr(seg, "sender_id", "")) == str(self_id)
             for seg in event.message_obj.message
         )
-
-        # 固定深夜休眠：轻量指令可用，普通聊天/@/学习全部停止。
-        if self._is_sleep_window():
-            cmd0, _, _ = self._parse_command(event)
-            wake_cmds={"帮助","状态","自检","版本","token","撤回"}
-            if cmd0 not in wake_cmds:
-                event.stop_event(); return
 
         self.register_member(group_id, sender_id, sender)
         self.record_message(group_id, sender, text if text else "[非文本消息]")
