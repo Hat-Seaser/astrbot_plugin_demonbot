@@ -350,6 +350,25 @@ class DemonBotPlugin(Star):
             except Exception as e:  # noqa: BLE001
                 self._boot_errors.append(f"LLM工具注册失败：{type(e).__name__}: {e}")
 
+        # ---------- 时钟自检 ----------
+        # 休眠窗口/高峰计费全部依赖「UTC + 固定偏移」算出来的北京时间，
+        # 这套算法本身没问题，但前提是宿主机系统时钟走得准（NTP 同步正常）。
+        # 如果宿主机时钟本身漂移了（比如虚拟机挂起唤醒、没装 NTP），
+        # 插件算出来的"北京时间"会跟着一起错，导致该休眠的时候没休眠，
+        # 同时 AstrBot 核心日志（走系统本地时区）跟插件内部时间也会对不上号。
+        # 这里在启动时把两者都记一遍，方便你事后翻日志对比，不用发 /状态 现查。
+        try:
+            offset = self._cfg("peak_hours", "utc_offset_hours", default=8)
+            bj_min = self._bj_minutes()
+            bj_str = f"{bj_min // 60:02d}:{bj_min % 60:02d}"
+            sys_str = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+            logger.info(f"[恶魔bot] 启动时钟自检 —— 插件算出的北京时间：{bj_str}（偏移 UTC+{offset}）｜宿主机系统时间：{sys_str}")
+            logger.info("[恶魔bot] 如果上面两个时间对不上（不是格式，是真的差了几分钟以上），"
+                        "说明宿主机系统时钟本身不准，请检查服务器/容器的 NTP 时间同步，"
+                        "这会同时导致「休眠时段判断错误」和「插件日志时间跟核心框架日志对不上号」两个问题。")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[恶魔bot] 时钟自检失败：{e}")
+
         for _err in self._boot_errors:
             logger.error(f"[恶魔bot] 启动告警：{_err}")
 
@@ -4211,11 +4230,25 @@ class DemonBotPlugin(Star):
 
         book = self._members.get(group_id) or {}
         seg_on = self._cfg("segment_reply", "enabled", default=False)
-        sleep_line = (f"是，剩 {self._sleep_remaining()}" if self._is_sleep_window() else "否（23:59-07:30）")
+        start_s = self._cfg("sleep_mode", "start", default="23:59")
+        end_s = self._cfg("sleep_mode", "end", default="07:30")
+        sleep_line = (f"是，剩 {self._sleep_remaining()}" if self._is_sleep_window() else f"否（{start_s}-{end_s}）")
         token_today = int(self._usage_reset_if_needed().get("total", 0))
+
+        # 排障用：插件自己算出来的「北京时间」+ 宿主机系统本地时间，两者一起打印。
+        # 如果这两行时间对不上（不只是显示格式，是真的差了几分钟/几小时），
+        # 说明宿主机系统时钟本身不准（没做 NTP 同步/时钟漂移），
+        # 这会导致插件算出来的休眠窗口跟实际北京时间脱节，
+        # 也会导致 AstrBot 核心日志（走系统本地时区）跟这里对不上号。
+        bj_min = self._bj_minutes()
+        bj_str = f"{bj_min // 60:02d}:{bj_min % 60:02d}"
+        sys_str = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+        offset = self._cfg("peak_hours", "utc_offset_hours", default=8)
+
         return "\n".join(
             [
                 f"恶魔bot {self.PLUGIN_VERSION}｜会话：{group_id}",
+                f"插件认定北京时间：{bj_str}（UTC{'+' if offset>=0 else ''}{offset} 换算）｜宿主机系统时间：{sys_str}",
                 (
                     f"高峰时段：是（双倍计费，只回被@的，{self._peak_ends_in()}分钟后恢复）"
                     if self.in_peak_hours() else "高峰时段：否（正常说话）"
@@ -4410,6 +4443,16 @@ class DemonBotPlugin(Star):
             lines.extend(f"   - {e}" for e in self._boot_errors[:5])
         else:
             lines.append("8. 启动告警：无")
+
+        # 时钟自检：休眠/日志对不上号，十有八九是宿主机系统时钟本身不准。
+        offset = self._cfg("peak_hours", "utc_offset_hours", default=8)
+        bj_min = self._bj_minutes()
+        bj_str = f"{bj_min // 60:02d}:{bj_min % 60:02d}"
+        sys_str = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+        lines.append(f"9. 插件北京时间：{bj_str}（UTC+{offset} 算的）｜宿主机系统时间：{sys_str}")
+        lines.append("   如果这两个时间对不上（差几分钟以上），说明宿主机时钟没同步好，"
+                      "会导致休眠时段判断跟实际北京时间脱节，日志时间也会跟这里对不上号。"
+                      "去服务器上跑一下时间同步（比如 timedatectl / ntpdate）就能修。")
 
         lines.append("\n还是不正常的话，去 AstrBot 日志里搜 demonbot，把红色那几行发我。")
         return "\n".join(lines)
