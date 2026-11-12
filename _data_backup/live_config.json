@@ -1,0 +1,450 @@
+﻿{
+  "reply_style": {
+    "enabled": true,
+    "inject_constraints": true,
+    "single_sentence": false,
+    "max_chars": 140,
+    "min_chars": 22,
+    "self_names": [
+      "焦糖"
+    ],
+    "think_delay_enabled": true,
+    "think_delay_base_seconds": 0.8,
+    "think_delay_per_char": 0.06,
+    "think_delay_max_seconds": 22.0,
+    "strip_action_text": true,
+    "strip_self_report": true
+  },
+  "knowledge": {
+    "enabled": true,
+    "backends": [
+      "bing_rss",
+      "baidu_baike_api",
+      "moegirl",
+      "jikipedia",
+      "bing_rss_intl",
+      "baidu_baike",
+      "duckduckgo"
+    ],
+    "bocha_api_key": "",
+    "tavily_api_key": "",
+    "results_per_query": 22,
+    "http_timeout_seconds": 8,
+    "summarize_timeout_seconds": 20,
+    "max_lookups_per_message": 2,
+    "total_lookup_timeout_seconds": 12,
+    "slang_query_template": "{term} 是什么意思 网络用语 梗",
+    "refresh_days": 60,
+    "max_slang_entries": 800,
+    "hot_topics_enabled": true,
+    "hot_refresh_hours": 6,
+    "hot_topics_count": 8,
+    "inject_hot_topics": false,
+    "hot_inject_count": 3,
+    "miss_retry_hours": 12
+  },
+  "members": {
+    "enabled": true,
+    "inject_roster": true,
+    "roster_limit": 5,
+    "max_alias_per_member": 5,
+    "max_notes_per_member": 6,
+    "inject_speaker": true,
+    "inject_recent_context": true,
+    "recent_context_lines": 4
+  },
+  "style": {
+    "enabled": true,
+    "update_interval_hours": 24,
+    "sample_size": 60,
+    "min_chars": 120,
+    "timeout_seconds": 30
+  },
+  "end_talk": {
+    "enabled": true,
+    "phrases": [],
+    "max_length": 5,
+    "quiet_seconds": 180,
+    "silent_even_if_at": true
+  },
+  "mute": {
+    "enabled": true,
+    "trigger_keywords": [
+      "闭嘴",
+      "安静",
+      "shut up"
+    ],
+    "unmute_keywords": [
+      "说话",
+      "复活",
+      "解除闭嘴",
+      "解禁",
+      "出来"
+    ],
+    "duration_minutes": 10,
+    "anyone_can_unmute": true,
+    "platform_mute_backoff_minutes": 30
+  },
+  "segment_reply": {
+    "enabled": true,
+    "trigger_min_length": 40,
+    "max_segments": 4,
+    "interval_min": 1.0,
+    "interval_max": 1.8
+  },
+  "peak_hours": {
+    "enabled": true,
+    "windows": [
+      "09:00-12:00",
+      "14:00-18:00"
+    ],
+    "utc_offset_hours": 8,
+    "at_reply_cooldown_seconds": 90,
+    "block_background_llm": true,
+    "image_cooldown_multiplier": 2.0
+  },
+  "token_saver": {
+    "enabled": true,
+    "max_context_messages": 4,
+    "max_context_chars_per_message": 90,
+    "max_system_prompt_chars": 8000,
+    "smart_inject": true,
+    "daily_aux_call_limit": 30,
+    "max_persona_chars": 4800
+  },
+  "reply_gate": {
+    "speak": true,
+    "enabled": true,
+    "reply_to_members": true,
+    "reply_to_admin": true,
+    "admin_ids": [],
+    "group_ids": [],
+    "mode": "rule",
+    "always_reply_on_at": true,
+    "min_reply_interval_seconds": 90,
+    "random_reply_chance": 0.12,
+    "admin_random_reply_chance": 0.5,
+    "keywords": [],
+    "emotion_keywords": [
+      "累",
+      "烦",
+      "崩了",
+      "笑死",
+      "无语",
+      "救命",
+      "难受"
+    ],
+    "emotion_reply_chance": 0.35,
+    "new_topic_silence_seconds": 300,
+    "new_topic_reply_chance": 0.2,
+    "rate_window_seconds": 60,
+    "busy_messages_per_minute": 15,
+    "busy_window_seconds": 300,
+    "busy_max_replies": 2,
+    "busy_chance_multiplier": 0.3,
+    "gate_provider_id": "",
+    "llm_context_messages": 6,
+    "llm_judge_timeout_seconds": 12
+  },
+  "repeat": {
+    "enabled": true,
+    "min_streak": 2,
+    "cooldown_seconds": 8,
+    "follow_chance": 0.7
+  },
+  "media_skip": {
+    "enabled": true,
+    "react_enabled": false,
+    "react_chance": 0.15,
+    "react_face_ids": [
+      178,
+      179,
+      182,
+      76
+    ]
+  },
+  "mood": {
+    "enabled": true,
+    "mention_activity_when_asked": true,
+    "drift_weight": 0.06,
+    "jitter": 0.05,
+    "schedule": []
+  },
+  "chat_history": {
+    "enabled": true,
+    "max_records_per_group": 300,
+    "save_every_n": 5
+  },
+  "memory": {
+    "max_memory_per_scope": 300
+  },
+  "commands": {
+    "prefixes": [
+      "/",
+      "=="
+    ],
+    "strict": true,
+    "require_at_for_others": true
+  },
+  "images": {
+    "enabled": true,
+    "backends": [
+      "pixiv",
+      "safebooru",
+      "lolicon",
+      "anosu"
+    ],
+    "proxy_domain": "i.pixiv.re",
+    "trigger_words": [
+      "看看",
+      "来点",
+      "来张",
+      "来个",
+      "整点",
+      "发张",
+      "发个",
+      "搞点",
+      "想看"
+    ],
+    "keyword_map": [
+      "腿=美脚|絶対領域",
+      "丝袜=ニーソックス|黒スト",
+      "白丝=白ニーソ",
+      "黑丝=黒スト",
+      "妹子=女の子|美少女",
+      "男的=男の子",
+      "猫=猫耳|ねこみみ",
+      "猫娘=猫耳",
+      "风景=風景|背景",
+      "天空=空",
+      "海=海",
+      "夜景=夜景",
+      "樱花=桜",
+      "雪=雪景色",
+      "校服=制服|スクール水着",
+      "制服=制服",
+      "JK=JK",
+      "泳装=水着",
+      "和服=着物|和服",
+      "头像=オリジナル",
+      "原创=オリジナル",
+      "情侣=カップル",
+      "治愈=癒し"
+    ],
+    "prefer_ranking": false,
+    "rank_modes": [
+      "monthly"
+    ],
+    "rank_pages": 1,
+    "rank_tag_pages": 1,
+    "rank_cache_seconds": 21600,
+    "pixiv_cookie": "92309085_kBbUB8K4aa02UGBMQhXJckLjQ0JzNfSq",
+    "pixiv_host": "https://www.pixiv.net",
+    "users_gate": [
+      10000,
+      5000,
+      1000,
+      500
+    ],
+    "month_only": true,
+    "search_pages": 2,
+    "min_bookmarks": 0,
+    "send_all_pages": true,
+    "forward_multi_page": true,
+    "max_pages_per_illust": 20,
+    "cooldown_seconds": 20,
+    "timeout_seconds": 12,
+    "quality_tag": "",
+    "pool_size": 8,
+    "min_width": 900,
+    "min_height": 900,
+    "exclude_ai": true,
+    "quality": "regular",
+    "per_user_cooldown_seconds": 30,
+    "admin_bypass_cooldown": true,
+    "real_enabled": true,
+    "notify_on_cooldown": true,
+    "mature_group_whitelist": [],
+    "notify_on_empty": true,
+    "localize_download": false
+  },
+  "owner": {
+    "qq": [
+      "2677518198"
+    ],
+    "names": [
+      "遂意"
+    ],
+    "title": "主人"
+  },
+  "life": {
+    "enabled": true,
+    "wake_hour": 7,
+    "weekend_wake_hour": 10,
+    "volunteer_on_change": true,
+    "volunteer_chance": 0.35
+  },
+  "stickers": {
+    "enabled": true,
+    "folder": "",
+    "zip_path": "",
+    "chance": 0.35,
+    "cooldown_seconds": 90,
+    "daily_limit": 220,
+    "always_after_reply": true,
+    "always_on_scold": true
+  },
+  "sponsor": {
+    "enabled": true,
+    "lines": [
+      "出bug了，给我主人充值点token求求啦",
+      "我又崩了，主人快来充点token吧求求了",
+      "脑子转不动了……主人，充值链接就在你手机里"
+    ],
+    "sticker_emotion": "出bug",
+    "cooldown_seconds": 600,
+    "show_reason": false,
+    "on_image_fail": false
+  },
+  "like": {
+    "daily_owner": true,
+    "run_at_hour": 21,
+    "run_at_minute": 0,
+    "max_times_per_user": 10
+  },
+  "quotes": {
+    "enabled": true,
+    "timeout_seconds": 8,
+    "max_chars": 60
+  },
+  "vision": {
+    "enabled": true,
+    "timeout_seconds": 220,
+    "ignore_budget": true
+  },
+  "voice": {
+    "enabled": false,
+    "max_chars": 80,
+    "timeout_seconds": 30
+  },
+  "sleep_mode": {
+    "enabled": true,
+    "start": "23:59",
+    "end": "07:30"
+  },
+  "persona": {
+    "inject": true,
+    "enabled": true,
+    "file": "persona.md",
+    "template": "persona_template.md",
+    "max_inject_chars": 4800,
+    "autolearn": true,
+    "autolearn_days": 7,
+    "autolearn_max_items": 24,
+    "max_chars": 16000
+  },
+  "poke": {
+    "enabled": true,
+    "cooldown_seconds": 20,
+    "auto_profile": true,
+    "mention_id_mode": "none"
+  },
+  "webfetch": {
+    "max_chars": 4000,
+    "timeout_seconds": 20
+  },
+  "bilibili": {
+    "pages": 2,
+    "timeout_seconds": 15,
+    "share_style": "casual",
+    "auto_share": true,
+    "auto_interval_hours": 6,
+    "auto_daily_cap": 2,
+    "auto_active_window_hours": 2,
+    "include_stats": false
+  },
+  "qzone": {
+    "enabled": true,
+    "cookie_ttl": 600,
+    "timeout": 20,
+    "auto_post": true,
+    "text_daily_cap": 2,
+    "image_daily_cap": 1,
+    "auto_cooldown_minutes": 180,
+    "photo_dir": "/data/data/com.termux/files/home/photos",
+    "keepalive_enabled": true,
+    "keepalive_max_gap_hours": 48,
+    "music_share_enabled": true,
+    "music_share_ratio": 0.6,
+    "music_playlists": [
+      "https://music.apple.com/cn/playlist/pl.u-6mo4aP3I809P4xZ",
+      "https://music.apple.com/cn/playlist/pl.u-ZmblxdoFVaXvZJz"
+    ],
+    "music_cache_hours": 24,
+    "autolearn": true,
+    "autolearn_gap_minutes": 30
+  },
+  "friend_request": {
+    "auto_accept": true,
+    "log_requests": true
+  },
+  "poetry": {
+    "enabled": true,
+    "idle_enabled": true,
+    "idle_threshold_seconds": 7200,
+    "idle_check_interval_seconds": 900,
+    "idle_chance": 0.18,
+    "idle_min_gap_seconds": 43200,
+    "reply_replace_chance": 0.1
+  },
+  "music": {
+    "enabled": true,
+    "local_clue_file": "music_clues.json",
+    "min_text_length": 6
+  },
+  "_schema_version": 5,
+  "social": {
+    "enabled": true,
+    "inject": true,
+    "inject_group": true,
+    "max_chars": 380
+  },
+  "feeds": {
+    "enabled": true,
+    "inject": true,
+    "refresh_minutes": 120,
+    "bilibili": true,
+    "bilibili_limit": 12,
+    "tieba": true,
+    "weibo": true,
+    "weibo_cookie": "SUB=_2AkMdueKdf8NxqwFRnvERxG3gZY10zgzEieKr5RNGJRMxHRl-yT9yqlwvtRB6NjnMcmcxVBtlherSnDrNR6Mqeje4m1pZ; XSRF-TOKEN=eliJ2e1GDWfpprZ0bS8s_55x; SUBP=0033WrSXqPxfM72-Ws9jqgMF55529P9D9W52vmZuR0sI79qU-J2n.dwN; WBPSESS=QQRVR321QExcc5hYynJO8EeR4rDYqjTHjY52akB_y_eF4rDx7brhzARdao_6rZAI04mzTcPV8dfiCRUSHLSLNpyDVp3uLfj6lRwKHlzhTHcDdf2Hf93FLdIWwaiGX98F4k7W3xhc9Eo14dcCTgaXEu6Rbah6irZVm3hzRUa71Jk=",
+    "xiaoheihe": true,
+    "xiaoheihe_cookie": "x_xhh_tokenid=Bkk2qxP/KSHtNAxT8A33pMMt90pUvaWxxEoSj+29KX0bCePlv23MrYFtomu1OaQJiTRLLFLYoDGMLXubgpoUjCw%3D%3D; heybox_id=46258493; user_heybox_id=46258493; user_pkey=MTc5MzQxNjQ1OC42MV80NjI1ODQ5M2p3a25ieGtjYmNpYXh4bW4__; pkey=MTc5MzQxNjQ1OC42MV80NjI1ODQ5M2p3a25ieGtjYmNpYXh4bW4__; smidV2=202610311113385066c996886a8ae78bf06f0f37fa1a150047df249a266e840; nickname=%u963F%u5E3D%u665A%u4E0A%u5403%u4EC0%u4E48; level=16",
+    "limit": 10,
+    "bilibili_cookie": "buvid3=8A38ADEB-1A05-84F7-7BF0-A3758241041586811infoc; b_nut=1792991286; _uuid=5102B22AD-D17C-CB2D-C95E-DCA4D85986D787260infoc; user_site=CN; buvid4=9EA4719D-F96F-D88C-BAD3-58D034F34B1187908-026102613-VCeaj7H78adFSKi/Czot+Nym8zn3c11aHLdmGVAk+2Uy0g8WOvX3Ohj+KwmYzg09; buvid_fp=41f05ec313ac2b5b9c6a2d7d78018001; SESSDATA=dd46667a%2C1808543324%2C4bc77%2Aa2CjBTK2IH7wEzkw3tlNEt2PrF0GLCSzCgF9-gZ6FPJXnMDvhi3LvZluZuMxDUc9lsX64SVmwzLWEzTUp1Ti1oUHF3bGlOR0tSYWhjbThDZGQyQ3RnSnpDRERyRUVuYlhTUTdmckxhNDBKcV9rRDNyZWV3am9pUVV1SXprUS1FclRuazdxazVXdjVRIIEC; bili_jct=e9dd4213a5269576a41e5bcae1497ce6; DedeUserID=439339045; DedeUserID__ckMd5=5c4bfacb56bd3cd7; sid=8j61g8k9; CURRENT_QUALITY=116; CURRENT_FNVAL=2000; b_lsid=31566025_1A19001B66B; home_feed_column=4",
+    "bili_taste_inject": true,
+    "tieba_cookie": "STOKEN=3d6d6d6e2592be8c4eab3bef66b5a9c4888c557470903ea22a43ed6a46f3ffb2; TIEBAUID=9ad470698eb1401b6c1b1f25; TIEBA_SID=H4sIAAAAAAAAA9MFAPiz3ZcBAAAA; ptui_loginuin=2530412315; TIEBA_NEW_PC=1"
+  },
+  "friend_suggest": {
+    "enabled": true,
+    "threshold": 10
+  },
+  "debounce": {
+    "enabled": true,
+    "min_seconds": 1.5,
+    "max_seconds": 4.0,
+    "total_seconds": 8.0
+  },
+  "closing_silence": {
+    "enabled": true,
+    "window_seconds": 600
+  },
+  "followup": {
+    "max_pending": 2,
+    "ttl_hours": 6
+  },
+  "air_guard": {
+    "max_streak": 3,
+    "cooldown_seconds": 180
+  }
+}

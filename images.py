@@ -613,83 +613,113 @@ async def pixiv_direct(
     else:
         rank_modes = list(rank_modes or DEFAULT_RANK_MODES)
 
-    # 强制只取 1 页 = 前 50；即使配置写大了也截断，避免质量稀释
-    pages = 1
-    top_n = 50
-
-    ranked_pool: list = []
-    for mode in rank_modes:
-        try:
-            items = await pixiv_ranking(
-                mode=mode, pages=pages, proxy=proxy, timeout=timeout,
-                cookie=cookie, host=host, quality=quality,
-                cache_seconds=rank_cache_seconds, logger=logger,
-            )
-        except Exception as e:
-            if logger:
-                logger.debug(f"[恶魔bot] {mode} 榜异常：{type(e).__name__}: {e}")
-            items = []
-        if items:
-            ranked_pool = items[:top_n]
-            if logger:
-                logger.info(
-                    f"[恶魔bot] 已取 {mode} 榜前 {len(ranked_pool)} 名"
-                    f"{'（含多p）' if any((x.get('page_count') or 1) > 1 for x in ranked_pool) else ''}"
-                )
-            break
-
-    if not ranked_pool:
-        return []
-
+    # ---------- 1. 标签优先：users入り 分级搜优质图 ----------
+    # Pixiv 社区惯例：作品收藏破千会被打上「1000users入り」这类标签，
+    # 所以按 10000 → 5000 → 1000 逐级搜，拿到的就是各收藏档的图池。
+    # 这比「去榜单里筛标签」靠谱得多——标签页热度榜是会员功能，拿不到；
+    # 而榜单接口 ranking.php?format=json 也已经失效（现在返回 HTML）。
+    gates = [int(g) for g in (users_gate or DEFAULT_USERS_GATE)]
     pool: list = []
-    if flat:
-        for x in ranked_pool:
-            score = _tag_score(x.get("tags"), flat)
-            if score > 0:
-                x = dict(x)
-                x["_tag_match_score"] = score
-                pool.append(x)
-        if pool:
-            if logger:
-                logger.info(
-                    f"[恶魔bot] 标签 {flat} 在榜单前 {top_n} 命中 {len(pool)} 张"
-                )
-        else:
-            # 标签页没有公开热度榜：宁可发月榜高质量，也不用搜索灌水
-            if logger:
-                logger.info(
-                    f"[恶魔bot] 标签 {flat} 未出现在榜单前 {top_n}，回退整榜随机（保画质）"
-                )
-            pool = [dict(x, _tag_match_score=0) for x in ranked_pool]
-    else:
-        pool = [dict(x, _tag_match_score=0) for x in ranked_pool]
+    per_tag_pages = max(1, min(int(search_pages or 2), 5))
 
-    # 可选：搜索兜底（默认关，避免低质图混入）
-    if allow_search_fallback and cookie and flat and not any(
-        int(x.get("_tag_match_score") or 0) > 0 for x in pool
-    ):
-        gates = list(users_gate or DEFAULT_USERS_GATE)
-        for tag in flat[:3]:
-            for g in gates[:2]:
+    if flat and cookie and not r18:
+        for gate in gates:
+            for tag in flat[:3]:
                 try:
                     found = await pixiv_search(
-                        f"{tag} {int(g)}users入り",
-                        pages=max(1, int(search_pages or 1)),
-                        proxy=proxy, timeout=timeout, cookie=cookie, host=host,
-                        quality=quality, month_only=month_only, logger=logger,
+                        f"{tag} {gate}users入り",
+                        pages=per_tag_pages, proxy=proxy, timeout=timeout,
+                        cookie=cookie, host=host, quality=quality,
+                        month_only=False,          # 优质图不该被"仅本月"卡住
+                        cache_seconds=rank_cache_seconds, logger=logger,
                     )
-                except Exception:
+                except Exception as e:  # noqa: BLE001
+                    if logger:
+                        logger.debug(
+                            f"[恶魔bot] 搜「{tag} {gate}users入り」失败：{type(e).__name__}"
+                        )
                     found = []
                 for x in found:
                     x = dict(x)
                     x["_tag_match_score"] = _tag_score(x.get("tags"), [tag])
+                    x["_gate"] = gate
                     pool.append(x)
-                if len(pool) >= 10:
+                if len(pool) >= 60:
                     break
-            if len(pool) >= 10:
+            if len(pool) >= 30:
+                break
+        if logger and pool:
+            logger.info(f"[恶魔bot] 标签 {flat[:2]} 优质池 {len(pool)} 张（门槛 {gates}）")
+
+    # ---------- 2. 有标签但 users入り 没命中：退回普通标签搜索 ----------
+    if flat and not pool and cookie and not r18:
+        for tag in flat[:2]:
+            try:
+                found = await pixiv_search(
+                    tag, pages=per_tag_pages, proxy=proxy, timeout=timeout,
+                    cookie=cookie, host=host, quality=quality,
+                    month_only=month_only, cache_seconds=rank_cache_seconds, logger=logger,
+                )
+            except Exception as e:  # noqa: BLE001
+                if logger:
+                    logger.debug(f"[恶魔bot] 搜「{tag}」失败：{type(e).__name__}")
+                found = []
+            for x in found:
+                x = dict(x)
+                x["_tag_match_score"] = _tag_score(x.get("tags"), [tag])
+                pool.append(x)
+
+    # ---------- 3. 榜单兜底（接口时好时坏，失败不影响整体） ----------
+    if not pool:
+        ranked_pool: list = []
+        for mode in rank_modes:
+            try:
+                items = await pixiv_ranking(
+                    mode=mode, pages=1, proxy=proxy, timeout=timeout,
+                    cookie=cookie, host=host, quality=quality,
+                    cache_seconds=rank_cache_seconds, logger=logger,
+                )
+            except Exception as e:  # noqa: BLE001
+                if logger:
+                    logger.debug(f"[恶魔bot] {mode} 榜异常：{type(e).__name__}: {e}")
+                items = []
+            if items:
+                ranked_pool = items[:100]
+                if logger:
+                    logger.info(f"[恶魔bot] 已取 {mode} 榜前 {len(ranked_pool)} 名")
+                break
+        if flat and ranked_pool:
+            hit = []
+            for x in ranked_pool:
+                sc = _tag_score(x.get("tags"), flat)
+                if sc > 0:
+                    y = dict(x)
+                    y["_tag_match_score"] = sc
+                    hit.append(y)
+            ranked_pool = hit or ranked_pool
+        pool = [dict(x, _tag_match_score=x.get("_tag_match_score") or 0) for x in ranked_pool]
+
+    # ---------- 4. 最后兜底：通用高收藏池 ----------
+    if not pool and cookie and not r18:
+        for word in ("1000users入り", "オリジナル"):
+            try:
+                found = await pixiv_search(
+                    word, pages=2, proxy=proxy, timeout=timeout,
+                    cookie=cookie, host=host, quality=quality,
+                    month_only=False, cache_seconds=rank_cache_seconds, logger=logger,
+                )
+            except Exception:  # noqa: BLE001
+                found = []
+            if found:
+                pool = [dict(x, _tag_match_score=0) for x in found]
+                if logger:
+                    logger.info(f"[恶魔bot] 无标签兜底：用「{word}」取了 {len(found)} 张")
                 break
 
-    if min_bookmarks and pool:
+    if not pool:
+        return []
+
+    if min_bookmarks:
         strong = [
             x for x in pool
             if (x.get("bookmarks") or 0) >= min_bookmarks or not x.get("bookmarks")
@@ -697,14 +727,112 @@ async def pixiv_direct(
         pool = strong or pool
 
     pool = _dedupe(pool)
-    # 有标签命中的优先，再按榜单名次（rank 越小越好）
+    # 先按标签命中数，再按收藏档，最后按榜名次；实际发哪张由 fetch 里的 shuffle 决定
     pool.sort(
         key=lambda x: (
             -int(x.get("_tag_match_score") or 0),
+            -int(x.get("_gate") or 0),
             int(x.get("rank") or 9999),
         )
     )
     return pool
+
+# ---------------------------------------------------------------- 免费补充图源
+
+SAFEBOORU_UA = "astrbot-demonbot/2.9.8"
+
+def _ascii_tags(tags) -> list:
+    """safebooru 只吃英文标签，中文/日文一律丢掉。"""
+    out = []
+    for t in tags or []:
+        s = str(t).strip().lstrip("#")
+        if not s:
+            continue
+        if all(ord(c) < 128 for c in s):
+            s = s.replace(" ", "_").lower()
+            if s not in out:
+                out.append(s)
+    return out
+
+
+async def safebooru(
+    tags: list,
+    limit: int = 1,
+    proxy: str = "",
+    timeout: float = 12.0,
+    mode: str = "or",
+    exclude_ai: bool = True,
+    r18: int = 0,
+    quality: str = "regular",
+) -> list:
+    """safebooru（Danbooru 免费镜像）：免登录、返回带 score 评分。
+
+    优点是不用 Cookie、不用签名，直接按评分从高到低筛，
+    正好补上「没有 Pixiv 会员也能按热度挑图」这个缺口。
+    只收安全内容，r18 请求直接返回空；没有可用英文标签时用 1girl 兜底。
+    """
+    if r18:
+        return []
+    words = _ascii_tags(tags)
+    expr = "+".join(words[:4]) if words else "1girl"
+    want = max(int(limit) * 6, 20)
+
+    for extra in ("+score%3A%3E100", "+score%3A%3E30", ""):
+        url = f"https://safebooru.donmai.us/posts.json?tags={expr}{extra}&limit={want}"
+        try:
+            # 注意：这里不能用浏览器的 UA，Cloudflare 会直接 403 拦掉；
+            # 简洁的 bot UA 反而放行。
+            raw = await _request(url, timeout=timeout, headers={"User-Agent": SAFEBOORU_UA})
+            arr = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(arr, list):
+            continue
+
+        out = []
+        for item in arr:
+            # 原图 3MB 以内直接用，超了退到 large_file_url（约 1500px，几十到几百 KB）。
+            # 原图动辄 6MB，发 QQ 又慢又没必要，但太小又糊，所以按体积折中。
+            orig_url = item.get("file_url") or ""
+            large_url = item.get("large_file_url") or ""
+            try:
+                orig_size = int(item.get("file_size") or 0)
+            except (TypeError, ValueError):
+                orig_size = 0
+            if orig_url and (orig_size == 0 or orig_size <= 3 * 1024 * 1024):
+                file_url = orig_url
+            else:
+                file_url = large_url or orig_url
+            if not file_url:
+                continue
+            tag_list = str(item.get("tag_string") or "").split()
+            if exclude_ai and "ai-generated" in tag_list:
+                continue
+            w = int(item.get("image_width") or 0)
+            h = int(item.get("image_height") or 0)
+            if w and h and (w < 600 or h < 600):
+                continue
+            out.append({
+                "url": file_url,
+                "page_urls": [file_url],
+                "title": (item.get("tag_string_character") or "").replace("_", " "),
+                "author": "",
+                "pid": str(item.get("id") or ""),
+                "tags": tag_list,
+                "width": w,
+                "height": h,
+                "page_count": 1,
+                "bookmarks": int(item.get("score") or 0),
+                "views": 0,
+                "rank": 0,
+                "size_used": "original",
+                "source": "safebooru",
+                "r18": item.get("rating") in ("q", "e"),
+            })
+        if out:
+            out.sort(key=lambda x: -int(x.get("bookmarks") or 0))
+            return out[:want]
+    return []
 
 
 # ---------------------------------------------------------------- 老图源
@@ -888,6 +1016,7 @@ async def real_person(
 BACKENDS = {
     "lolicon": lolicon,
     "anosu": anosu,
+    "safebooru": safebooru,
     "real": real_person,
 }
 

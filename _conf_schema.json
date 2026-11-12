@@ -338,7 +338,7 @@
       "duration_minutes": {
         "description": "默认闭嘴时长（分钟）",
         "type": "int",
-        "default": 10
+        "default": 20
       },
       "anyone_can_unmute": {
         "description": "任何人都能解除闭嘴",
@@ -537,12 +537,14 @@
       "min_reply_interval_seconds": {
         "description": "主动插话最小间隔（秒）",
         "type": "int",
-        "default": 225
+        "default": 90,
+        "hint": "两次主动回复的最小间隔（秒），默认 90。对应 /间隔"
       },
       "random_reply_chance": {
         "description": "普通群友发言后的插话概率",
         "type": "float",
-        "default": 0.05
+        "default": 0.12,
+        "hint": "普通群友说话后主动插话的概率，默认 0.12。对应 /概率"
       },
       "admin_random_reply_chance": {
         "description": "管理员发言后的插话概率",
@@ -623,6 +625,31 @@
         "description": "llm 模式判断超时（秒）",
         "type": "int",
         "default": 12
+      },
+      "laya_enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "Laya 置信：llm 判断输出 0-100 接话意愿，低于阈值旁听"
+      },
+      "llm_confidence_threshold": {
+        "type": "int",
+        "default": 50,
+        "description": "接话置信阈值（0-100），低于则旁听"
+      },
+      "conversation_follow": {
+        "type": "bool",
+        "default": true,
+        "description": "对话连续性：被@/回应某人后，冷场窗口内他不用每次@也能接着聊"
+      },
+      "conversation_window_seconds": {
+        "type": "int",
+        "default": 300,
+        "description": "对话冷场窗口（秒）：超过这个时间不说话就算对话结束"
+      },
+      "conversation_reply_chance": {
+        "type": "float",
+        "default": 0.65,
+        "description": "对话接续概率（0-1），低于 1 时偶尔沉默更像真人"
       }
     }
   },
@@ -764,10 +791,14 @@
         ]
       },
       "strict": {
-        "description": "前缀命中但指令名不认识时，回一句提示并终止",
-        "hint": "开着能保证任何以前缀开头的消息都不会流进聊天流程；关掉则当普通聊天处理",
         "type": "bool",
-        "default": true
+        "default": true,
+        "description": "未知指令时提示"
+      },
+      "require_at_for_others": {
+        "type": "bool",
+        "default": true,
+        "description": "群里普通用户发指令必须 @ 或引用 bot 才响应（管理员不受限）"
       }
     }
   },
@@ -783,10 +814,11 @@
       },
       "backends": {
         "description": "图源及顺序",
-        "hint": "可用：pixiv（官方排行榜/搜索，画质最好）、lolicon、anosu。前一个没结果才试下一个",
+        "hint": "可用：pixiv（画质最好）、safebooru（免费免登录，自带评分）、lolicon、anosu。前一个没结果才试下一个",
         "type": "list",
         "default": [
           "pixiv",
+          "safebooru",
           "lolicon",
           "anosu"
         ]
@@ -888,13 +920,13 @@
         "default": "https://www.pixiv.net"
       },
       "users_gate": {
-        "description": "收藏量门槛标签",
-        "hint": "Pixiv 会给作品自动打「5000users入り」这类收藏里程碑标签。搜索时会带上它来筛高收藏作品，从高到低依次尝试。免费账号拿不到「按热门排序」，这是替代方案",
+        "description": "Pixiv 收藏门槛（按 10000→5000→1000 逐级搜 users入り 标签）",
         "type": "list",
         "default": [
           10000,
           5000,
-          1000
+          1000,
+          500
         ]
       },
       "month_only": {
@@ -922,7 +954,7 @@
         "default": true
       },
       "forward_multi_page": {
-        "description": "多 p 用合并转发发送",
+        "description": "所有传图都用合并转发的聊天记录发送（含单图，作品信息不会丢）",
         "hint": "做成「聊天记录」形式，点开才看得到，不刷屏。平台不支持时自动退回成普通多图。对应 /开关 合并转发",
         "type": "bool",
         "default": true
@@ -986,9 +1018,9 @@
       },
       "per_user_cooldown_seconds": {
         "type": "int",
-        "default": 300,
+        "default": 30,
         "description": "普通用户发图冷却（秒）",
-        "hint": "每人每隔这么久才能要一张图。默认 300 秒=5 分钟。对应 /开关 图冷却"
+        "hint": "每人每隔这么久才能要一张图。默认 30 秒。对应 /开关 图冷却"
       },
       "admin_bypass_cooldown": {
         "type": "bool",
@@ -1019,6 +1051,11 @@
         "hint": "关掉则取图失败时装作没看见",
         "type": "bool",
         "default": true
+      },
+      "localize_download": {
+        "type": "bool",
+        "default": false,
+        "description": "取图后先下载到本地再发（safebooru 的 CDN 会拦 QQ 端下载，该源自动启用）"
       }
     }
   },
@@ -1105,14 +1142,15 @@
       },
       "chance": {
         "description": "普通对话发表情的概率",
-        "hint": "0.9 = 十有九次跟表情。挨骂和困了强制发",
+        "hint": "每次回复后跟表情包的概率，默认 0.35。对应 /表情 0.35，0 就是不发",
         "type": "float",
-        "default": 0.9
+        "default": 0.35
       },
       "cooldown_seconds": {
         "description": "同一个人两张表情的最小间隔（秒）",
         "type": "int",
-        "default": 180
+        "default": 90,
+        "hint": "同一人在同群两张表情之间至少隔几秒，默认 90"
       },
       "daily_limit": {
         "description": "每个会话每天最多发几张",
@@ -1120,13 +1158,13 @@
         "default": 220
       },
       "always_after_reply": {
-        "description": "几乎每句回复后都跟一张表情",
+        "description": "每条回复都给一次发表情的机会（再按概率决定发不发）",
         "hint": "开：没命中具体情绪时用中性表情兜底。关：只在识别到情绪时发。挨骂/困了仍可强制发",
         "type": "bool",
         "default": true
       },
       "always_on_scold": {
-        "description": "挨骂和犯困时必发",
+        "description": "被骂时必须表态（只有这一种绕过概率）",
         "hint": "忽略概率和冷却。你要的「批评它就发被击中/害怕/哭」就靠这个",
         "type": "bool",
         "default": true
@@ -1299,6 +1337,65 @@
       "inject": {
         "type": "bool",
         "default": true
+      },
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "是否启用长期人格档案"
+      },
+      "file": {
+        "type": "string",
+        "default": "persona.md",
+        "description": "人格文件名（放在插件数据目录）"
+      },
+      "template": {
+        "type": "string",
+        "default": "persona_template.md",
+        "description": "人格模板文件名"
+      },
+      "max_inject_chars": {
+        "type": "int",
+        "default": 4800,
+        "description": "注入人格的最大字数",
+        "slider": {
+          "min": 250,
+          "max": 8000,
+          "step": 50
+        }
+      },
+      "autolearn": {
+        "type": "bool",
+        "default": true,
+        "description": "人格档案自动沉淀：定期把主人说过的话提炼成长期记忆写进档案",
+        "hint": "只提炼有长期价值的事实，闲聊和要图不会记"
+      },
+      "autolearn_days": {
+        "type": "int",
+        "default": 7,
+        "description": "自动沉淀间隔（天）",
+        "hint": "默认 7 天跑一次；也可以随时用 /沉淀 手动触发"
+      },
+      "autolearn_max_items": {
+        "type": "int",
+        "default": 24,
+        "description": "档案里最多保留多少条补充记忆",
+        "hint": "超出会丢掉最早的，默认 24 条"
+      },
+      "max_chars": {
+        "type": "int",
+        "default": 16000,
+        "description": "人格档案文件总长度上限（字符）",
+        "hint": "防止档案无限膨胀把 token 吃掉"
+      },
+      "inject_core": {
+        "type": "bool",
+        "default": true,
+        "description": "注入人格核心（性格/说话方式/禁忌），修复人格掉线"
+      },
+      "core_max_chars": {
+        "type": "int",
+        "default": 900,
+        "description": "人格核心最大字数"
       }
     }
   },
@@ -1313,6 +1410,533 @@
       "cooldown_seconds": {
         "type": "int",
         "default": 20
+      }
+    }
+  },
+  "webfetch": {
+    "description": "网页正文读取（/看网页、/下一页）",
+    "type": "object",
+    "items": {
+      "max_chars": {
+        "type": "int",
+        "default": 4000,
+        "description": "每页最多读多少字",
+        "slider": {
+          "min": 800,
+          "max": 20000,
+          "step": 200
+        }
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "default": 20,
+        "description": "抓取超时（秒）",
+        "slider": {
+          "min": 5,
+          "max": 60,
+          "step": 5
+        }
+      }
+    }
+  },
+  "bilibili": {
+    "description": "B站刷视频（/刷B站）",
+    "type": "object",
+    "items": {
+      "pages": {
+        "type": "int",
+        "default": 2,
+        "description": "抓几页热门（每页20条，多抓几条便于随机）",
+        "slider": {
+          "min": 1,
+          "max": 5,
+          "step": 1
+        }
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "default": 15,
+        "description": "接口超时（秒）",
+        "slider": {
+          "min": 5,
+          "max": 40,
+          "step": 5
+        }
+      },
+      "share_style": {
+        "type": "string",
+        "default": "casual",
+        "description": "分享口吻：casual=随手提一句 / plain=普通一两句"
+      },
+      "auto_share": {
+        "type": "bool",
+        "default": true,
+        "description": "定时自己刷B站并在群里分享（默认开）"
+      },
+      "auto_interval_hours": {
+        "type": "int",
+        "default": 6,
+        "description": "多久自己刷一次（小时）",
+        "slider": {
+          "min": 1,
+          "max": 24,
+          "step": 1
+        }
+      },
+      "auto_daily_cap": {
+        "type": "int",
+        "default": 2,
+        "description": "每天最多主动分享几次",
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
+      },
+      "auto_active_window_hours": {
+        "type": "int",
+        "default": 2,
+        "description": "只在最近N小时有人说话时才发（避免自说自话）",
+        "slider": {
+          "min": 1,
+          "max": 12,
+          "step": 1
+        }
+      },
+      "include_stats": {
+        "type": "bool",
+        "default": false,
+        "description": "分享B站内容时带上播放量/点赞/弹幕",
+        "hint": "默认关。真人聊视频只说内容不说数据，开了反而更像营销号"
+      }
+    }
+  },
+  "qzone": {
+    "description": "QQ空间（用 bot 自己的号发说说）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "总开关"
+      },
+      "cookie_ttl": {
+        "type": "int",
+        "default": 600,
+        "description": "登录态缓存秒数，0=不缓存",
+        "slider": {
+          "min": 0,
+          "max": 3600,
+          "step": 60
+        }
+      },
+      "timeout": {
+        "type": "int",
+        "default": 20,
+        "description": "请求超时（秒）",
+        "slider": {
+          "min": 5,
+          "max": 60,
+          "step": 5
+        }
+      },
+      "auto_post": {
+        "type": "bool",
+        "default": false,
+        "description": "心情波动时自己发说说（关=只能手动 /发说说）"
+      },
+      "text_daily_cap": {
+        "type": "int",
+        "default": 2,
+        "description": "纯文字说说每日上限",
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
+      },
+      "image_daily_cap": {
+        "type": "int",
+        "default": 1,
+        "description": "带图说说每日上限",
+        "slider": {
+          "min": 0,
+          "max": 5,
+          "step": 1
+        }
+      },
+      "auto_cooldown_minutes": {
+        "type": "int",
+        "default": 180,
+        "description": "两次自动说说最小间隔（分钟）",
+        "slider": {
+          "min": 30,
+          "max": 720,
+          "step": 30
+        }
+      },
+      "photo_dir": {
+        "type": "string",
+        "default": "",
+        "description": "配图照片目录（绝对路径，留空=不配图）。只放可以公开发出去的图"
+      },
+      "keepalive_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "保底发说说：群里没人聊天也保证隔一段时间自己发一条",
+        "hint": "由独立定时器检查，不依赖有人发消息"
+      },
+      "keepalive_max_gap_hours": {
+        "type": "int",
+        "default": 48,
+        "description": "保底最大间隔（小时）",
+        "hint": "默认 48 小时＝每两天至少一条；代码里最小按 6 小时算"
+      },
+      "music_share_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "说说支持音乐分享（从 Apple Music 歌单挑一首，配封面图 + 歌名歌手）"
+      },
+      "music_share_ratio": {
+        "type": "float",
+        "default": 0.6,
+        "description": "发说说时走音乐分享的概率（0~1）",
+        "hint": "默认 0.6，其余走相册照片或纯文字"
+      },
+      "music_playlists": {
+        "type": "list",
+        "default": [
+          "https://music.apple.com/cn/playlist/pl.u-6mo4aP3I809P4xZ",
+          "https://music.apple.com/cn/playlist/pl.u-ZmblxdoFVaXvZJz"
+        ],
+        "description": "Apple Music 歌单链接，多个会合并去重当曲池"
+      },
+      "music_cache_hours": {
+        "type": "int",
+        "default": 24,
+        "description": "歌单缓存小时数，过期才重新抓（避免每次发说说都抓一遍网页）"
+      },
+      "autolearn": {
+        "type": "bool",
+        "default": true,
+        "description": "发说说前自动去看别人的空间，学真人的写法和配文习惯",
+        "hint": "不用手动喂样本；只读操作，但会限流（见下一项）"
+      },
+      "autolearn_gap_minutes": {
+        "type": "int",
+        "default": 30,
+        "description": "自动学习的最小间隔（分钟）",
+        "hint": "默认 30 分钟最多学一轮，每轮看 2 个人，每人 12 小时内不重复"
+      }
+    }
+  },
+  "social": {
+    "description": "跨会话社交档案：同一个人在多个群、私聊里的痕迹汇总成一张卡",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用社交档案（群聊和私聊共享同一个人/同一个群的记忆）",
+        "hint": "关掉就退回原来那样：群聊私聊各记各的，互不相认"
+      },
+      "inject": {
+        "type": "bool",
+        "default": true,
+        "description": "把「你们之前在哪打过交道」注入到对话里",
+        "hint": "关掉只是不注入，仍然照常记录"
+      },
+      "inject_group": {
+        "type": "bool",
+        "default": true,
+        "description": "群聊时注入群档案（群名、常来的人）"
+      },
+      "max_chars": {
+        "type": "int",
+        "default": 380,
+        "description": "这段注入最多多少字，防止挤占人格和上下文"
+      }
+    }
+  },
+  "feeds": {
+    "description": "各平台热点（谈资池）：定时刷热榜，聊天时偶尔带一句「我最近刷到…」",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "总开关"
+      },
+      "inject": {
+        "type": "bool",
+        "default": true,
+        "description": "聊天时按概率引用一条热点",
+        "hint": "约 18% 的消息会带上，只有话题对得上才会被用"
+      },
+      "refresh_minutes": {
+        "type": "int",
+        "default": 120,
+        "description": "多久刷一轮（分钟）"
+      },
+      "bilibili": {
+        "type": "bool",
+        "default": true,
+        "description": "B站热门（不需要 cookie）"
+      },
+      "bilibili_limit": {
+        "type": "int",
+        "default": 12,
+        "description": "B站每轮抓几条"
+      },
+      "tieba": {
+        "type": "bool",
+        "default": true,
+        "description": "贴吧热门吧（不需要 cookie）"
+      },
+      "weibo": {
+        "type": "bool",
+        "default": true,
+        "description": "微博热搜（需要 cookie）"
+      },
+      "weibo_cookie": {
+        "type": "text",
+        "default": "",
+        "description": "微博 cookie 整行，留空就不抓微博",
+        "hint": "浏览器 F12 → Network → 任一请求的 Cookie 头，整行贴进来"
+      },
+      "xiaoheihe": {
+        "type": "bool",
+        "default": true,
+        "description": "小黑盒社区（需要 cookie）"
+      },
+      "xiaoheihe_cookie": {
+        "type": "text",
+        "default": "",
+        "description": "小黑盒 cookie 整行，留空就不抓",
+        "hint": "同上，注意这个接口不公开，随时可能失效"
+      },
+      "limit": {
+        "type": "int",
+        "default": 10,
+        "description": "贴吧/微博/小黑盒各抓几条"
+      },
+      "bilibili_cookie": {
+        "type": "text",
+        "default": "",
+        "description": "B站 cookie 整行（只读你的观看历史，用来了解你平时爱刷什么）",
+        "hint": "F12 → Network → 任一 bilibili.com 请求 → 复制 Cookie 整行；留空则跳过"
+      },
+      "bili_taste_inject": {
+        "type": "bool",
+        "default": true,
+        "description": "和主人聊天时带上「他平时刷什么」的口味提示",
+        "hint": "只在跟你说话时注入，别人看不到"
+      },
+      "tieba_cookie": {
+        "type": "text",
+        "default": "",
+        "description": "贴吧 cookie（需要 BDUSS 才有登录态，只有 STOKEN 不完整）",
+        "hint": "百度风控很硬，非浏览器请求常被拦；抓不到就留空，不影响其他平台"
+      }
+    }
+  },
+  "friend_suggest": {
+    "description": "好友提报：有人反复点名找 bot，就私聊主人问要不要手动加（bot 自己加不了人）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启好友提报"
+      },
+      "threshold": {
+        "type": "int",
+        "default": 10,
+        "description": "被同一个人 @ / 回复多少次后提报",
+        "hint": "默认 10 次。只算点名找它的情况，普通群聊刷屏不计数；每人只提一次"
+      }
+    }
+  },
+  "debounce": {
+    "description": "连续输入防抖：用户把一句话拆成几条发时合并成一轮，避免 bot 抢答",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启"
+      },
+      "min_seconds": {
+        "type": "float",
+        "default": 1.5,
+        "description": "结尾有句号时等多久（秒）",
+        "hint": "说明话说完了，可以快一点"
+      },
+      "max_seconds": {
+        "type": "float",
+        "default": 4.0,
+        "description": "结尾没有标点时等多久（秒）",
+        "hint": "大概率还在打字，多等一会儿"
+      },
+      "total_seconds": {
+        "type": "float",
+        "default": 8.0,
+        "description": "从第一条算起的总等待上限（秒）",
+        "hint": "防止用户一直发导致永不回复"
+      }
+    }
+  },
+  "closing_silence": {
+    "description": "收尾沉默：互道晚安时不来回刷，避免「晚安」「晚安呀」死循环",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启"
+      },
+      "window_seconds": {
+        "type": "int",
+        "default": 600,
+        "description": "上一轮道别多久之内有效（秒）"
+      }
+    }
+  },
+  "followup": {
+    "description": "未完话头：记住问过什么，对方没答就别反复追问",
+    "type": "object",
+    "items": {
+      "max_pending": {
+        "type": "int",
+        "default": 2,
+        "description": "最多同时记几个没答的问题"
+      },
+      "ttl_hours": {
+        "type": "int",
+        "default": 6,
+        "description": "多久之后自动忘掉（小时）"
+      },
+      "semantic_review": {
+        "type": "bool",
+        "default": true,
+        "description": "语义复核：用户回了实质内容后交给模型判断是否答完"
+      }
+    }
+  },
+  "air_guard": {
+    "description": "气氛收口：连续插话几轮后强制旁听，别把群刷成自己的独角戏",
+    "type": "object",
+    "items": {
+      "max_streak": {
+        "type": "int",
+        "default": 3,
+        "description": "连续主动插话多少轮后闭嘴",
+        "hint": "被 @ 或引用不算，会重置计数"
+      },
+      "cooldown_seconds": {
+        "type": "int",
+        "default": 180,
+        "description": "安静多久后重新可以插话（秒）"
+      }
+    }
+  },
+  "recall": {
+    "description": "撤回沉默：对方撤回消息时停止回复，管理员问撤回内容时给摘要",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启撤回监听"
+      },
+      "silence_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "触发消息被撤回时拦截未发回复"
+      },
+      "summary_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "管理员问撤回内容时注入摘要"
+      },
+      "max_summary": {
+        "type": "int",
+        "default": 5,
+        "description": "最多记几条撤回摘要"
+      },
+      "window_minutes": {
+        "type": "int",
+        "default": 30,
+        "description": "撤回记录保留多久（分钟）"
+      }
+    }
+  },
+  "anniversary": {
+    "description": "互动纪念日：从原话提取第一次见面/告白/约定等里程碑",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启纪念日"
+      },
+      "max_items": {
+        "type": "int",
+        "default": 12,
+        "description": "最多记几个纪念日"
+      },
+      "learn_days": {
+        "type": "int",
+        "default": 7,
+        "description": "提取时回看几天（天）"
+      },
+      "lookahead_days": {
+        "type": "int",
+        "default": 7,
+        "description": "提前几天提醒"
+      }
+    }
+  },
+  "cross_window": {
+    "description": "跨窗口承接：群里聊过、私聊又提起时保持同一立场",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启"
+      },
+      "window_minutes": {
+        "type": "int",
+        "default": 30,
+        "description": "多久内的群聊算刚聊过（分钟）"
+      },
+      "max_chars": {
+        "type": "int",
+        "default": 200,
+        "description": "承接提示最大字数"
+      }
+    }
+  },
+  "prompt_cache": {
+    "description": "Prompt Cache 友好：稳定内容放前、动态事实放后，提升缓存命中省 token",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启"
+      }
+    }
+  },
+  "gif": {
+    "description": "GIF 动图：抽 9 帧拼九宫格并注入连续帧说明（需 Pillow，未装则只注入说明）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "开启"
       }
     }
   }
